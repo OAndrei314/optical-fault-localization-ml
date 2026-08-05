@@ -14,6 +14,16 @@ not a reproduction of any real system.
 
 ## Why this is relevant right now
 
+**Research question:** how far can synthetic optical-link fault traces go for training and
+stress-testing a fault classifier/localizer before domain shift breaks performance?
+
+**Money question:** the AI buildout increases dependence on optical links and
+transceivers. Faster optical fault localization reduces downtime, field-debug cost, and
+spare-module guesswork in expensive network deployments.
+
+**Engineering evidence:** the CLI reports fault-type accuracy, classification detail, and
+localization MAE in kilometers, with an optional markdown report artifact.
+
 Silicon photonics and coherent optical interconnects aren't just a telecom topic anymore —
 co-packaged optics and optical interconnects are becoming the scaling bottleneck (and
 investment focus) for AI datacenter clusters as GPU-to-GPU and rack-to-rack bandwidth
@@ -52,7 +62,8 @@ pip install -r requirements.txt
 python -m optical_faults.cli generate --n 1200 --seed 0 --out data/dataset.npz
 
 # Train + evaluate both models, print a classification report and localization MAE
-python -m optical_faults.cli train --data data/dataset.npz --out models/
+python -m optical_faults.cli train --data data/dataset.npz --out models/ \
+  --report reports/seed0.md
 
 # Save one example trace per fault type as a PNG, for a quick look at the data
 python -m optical_faults.cli plot-examples --seed 1 --out examples/

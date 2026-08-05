@@ -9,7 +9,7 @@ import numpy as np
 
 from . import FAULT_TYPES
 from .dataset import generate_dataset, load_dataset, save_dataset
-from .model import train_and_evaluate
+from .model import render_markdown_report, train_and_evaluate
 from .simulate import simulate_trace
 
 
@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     train_p.add_argument("--data", required=True, help="path to dataset .npz from `generate`")
     train_p.add_argument("--out", required=True, help="output directory for saved models")
     train_p.add_argument("--seed", type=int, default=0)
+    train_p.add_argument("--report", help="optional markdown report path")
 
     plot_p = sub.add_parser("plot-examples", help="save one example trace per fault type")
     plot_p.add_argument("--seed", type=int, default=1)
@@ -49,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fault-type accuracy: {result.accuracy:.3f}")
         print(f"localization MAE: {result.localization_mae_km:.3f} km")
         print(result.report)
+        if args.report:
+            os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
+            with open(args.report, "w", encoding="utf-8") as handle:
+                handle.write(render_markdown_report(result, sample_count=len(X)))
         return 0
 
     if args.command == "plot-examples":

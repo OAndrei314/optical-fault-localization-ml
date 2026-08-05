@@ -49,3 +49,42 @@ def train_and_evaluate(
     )
 
     return TrainResult(clf, reg, float(accuracy), float(localization_mae), report)
+
+
+def render_markdown_report(result: TrainResult, sample_count: int) -> str:
+    return "\n".join(
+        [
+            "# Optical Fault Localization Report",
+            "",
+            "## Research Question",
+            "",
+            "How far can synthetic optical-link fault traces go for training and",
+            "stress-testing a fault classifier/localizer before harder domain-shift tests",
+            "are needed?",
+            "",
+            "## Money Question",
+            "",
+            "AI datacenter buildouts depend on high-bandwidth optical links. Faster fault",
+            "localization reduces downtime, field-debug effort, and spare-module guesswork",
+            "in expensive optical network deployments.",
+            "",
+            "## Engineering Evidence",
+            "",
+            f"- Synthetic samples: {sample_count}",
+            f"- Fault-type accuracy: {result.accuracy:.3f}",
+            f"- Localization MAE: {result.localization_mae_km:.3f} km",
+            "",
+            "## Classification Report",
+            "",
+            "```text",
+            result.report.strip(),
+            "```",
+            "",
+            "## Limitations",
+            "",
+            "The data is synthetic and intentionally simplified. Strong results here mean",
+            "the pipeline recovered structure in the simulator; they do not prove",
+            "production performance on real optical traces.",
+            "",
+        ]
+    )

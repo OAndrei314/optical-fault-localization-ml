@@ -1,5 +1,5 @@
 from optical_faults.dataset import generate_dataset
-from optical_faults.model import train_and_evaluate
+from optical_faults.model import render_markdown_report, train_and_evaluate
 
 
 def test_classifier_beats_random_baseline():
@@ -15,3 +15,14 @@ def test_localization_error_is_bounded_on_a_40km_span():
     # A model that's actually learning something should beat "always guess mid-span"
     # (which on a 40km span with faults in [0.15L, 0.85L] has an MAE of roughly 7-8km).
     assert result.localization_mae_km < 7.0
+
+
+def test_markdown_report_contains_research_and_money_context():
+    X, y_type, y_position = generate_dataset(n=120, seed=2)
+    result = train_and_evaluate(X, y_type, y_position, seed=2, n_estimators=20)
+
+    report = render_markdown_report(result, sample_count=len(X))
+
+    assert "Research Question" in report
+    assert "Money Question" in report
+    assert "Fault-type accuracy" in report
