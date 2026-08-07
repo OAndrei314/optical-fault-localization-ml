@@ -14,6 +14,16 @@ not a reproduction of any real system.
 
 ## Why this is relevant right now
 
+**Research question:** how far can synthetic optical-link fault traces go for training and
+stress-testing a fault classifier/localizer before domain shift breaks performance?
+
+**Money question:** the AI buildout increases dependence on optical links and
+transceivers. Faster optical fault localization reduces downtime, field-debug cost, and
+spare-module guesswork in expensive network deployments.
+
+**Engineering evidence:** the CLI reports fault-type accuracy, classification detail, and
+localization MAE in kilometers, with an optional markdown report artifact.
+
 Silicon photonics and coherent optical interconnects aren't just a telecom topic anymore —
 co-packaged optics and optical interconnects are becoming the scaling bottleneck (and
 investment focus) for AI datacenter clusters as GPU-to-GPU and rack-to-rack bandwidth
@@ -52,10 +62,15 @@ pip install -r requirements.txt
 python -m optical_faults.cli generate --n 1200 --seed 0 --out data/dataset.npz
 
 # Train + evaluate both models, print a classification report and localization MAE
-python -m optical_faults.cli train --data data/dataset.npz --out models/
+python -m optical_faults.cli train --data data/dataset.npz --out models/ \
+  --report reports/seed0.md
 
 # Save one example trace per fault type as a PNG, for a quick look at the data
 python -m optical_faults.cli plot-examples --seed 1 --out examples/
+
+# Train once, then evaluate noisier / weaker-fault shifted synthetic domains
+python -m optical_faults.cli stress --train-n 800 --test-n 300 --seed 0 \
+  --report reports/domain-shift.md
 ```
 
 ## Honest results
@@ -68,17 +83,21 @@ current simulator makes each fault type's signature well-separated relative to t
 level I chose (`NOISE_STD_DB = 0.08`), not that fault classification is a solved problem.
 The hand-engineered features (`slope_diff_abs`, `frac_near_floor`, `max_abs_diff`) were
 built with specific fault signatures in mind, so this is closer to "the model recovered a
-separation I designed in" than "the model discovered something surprising." The honest
-next step, and the actual point of this repo, is to make the task harder until the model
-has to work for it: raise `NOISE_STD_DB`, shrink the loss magnitudes for `connector_loss`/
-`bend_loss` toward the noise floor, and add multi-fault traces — at that point I'd expect
-`bend_loss` and `amp_gain_drift` to become genuinely hard to separate, since both are
-"gradual extra loss" and differ only in slope shape.
+separation I designed in" than "the model discovered something surprising."
+
+The repo now includes a domain-shift stress command that makes the task harder in exactly
+that way: it trains on the source synthetic distribution, then evaluates shifted
+distributions with higher noise, weaker fault signatures, and both at once. On a quick
+small run (`--train-n 300 --test-n 120 --seed 4 --estimators 30`), source accuracy was
+0.992 and the high-noise/weak-fault case fell to 0.692. That drop is the useful result:
+it marks where synthetic data generation and feature design need more work before any
+robustness claim is credible.
 
 ## Status / next steps
 
-Single-fault-per-trace only; multi-fault traces and a proper OTDR reflectance model
-(Fresnel reflections at connectors) are the natural next extensions.
+Single-fault-per-trace only; multi-fault traces, a proper OTDR reflectance model
+(Fresnel reflections at connectors), and calibration against public/realistic trace
+statistics are the natural next extensions.
 
 ## License
 
