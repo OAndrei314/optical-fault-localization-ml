@@ -9,7 +9,12 @@ from .simulate import simulate_trace
 
 
 def generate_dataset(
-    n: int, length_km: float = 40.0, step_km: float = 0.05, seed: int = 0
+    n: int,
+    length_km: float = 40.0,
+    step_km: float = 0.05,
+    seed: int = 0,
+    noise_std_db: float | None = None,
+    loss_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Returns (X, y_type, y_position) where y_position is NaN for the 'none' class."""
     rng = np.random.default_rng(seed)
@@ -19,7 +24,10 @@ def generate_dataset(
 
     for i in range(n):
         fault_type = FAULT_TYPES[rng.integers(0, len(FAULT_TYPES))]
-        sample = simulate_trace(fault_type, length_km=length_km, step_km=step_km, rng=rng)
+        kwargs = {"loss_scale": loss_scale}
+        if noise_std_db is not None:
+            kwargs["noise_std_db"] = noise_std_db
+        sample = simulate_trace(fault_type, length_km=length_km, step_km=step_km, rng=rng, **kwargs)
         X[i] = extract_features(sample.distance_km, sample.power_db)
         y_type[i] = sample.fault_type
         if sample.fault_position_km is not None:

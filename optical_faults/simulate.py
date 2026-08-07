@@ -29,8 +29,8 @@ def _baseline(distance_km: np.ndarray) -> np.ndarray:
     return LAUNCH_POWER_DB - ALPHA_DB_PER_KM * distance_km
 
 
-def _rng_noise(n: int, rng: np.random.Generator) -> np.ndarray:
-    return rng.normal(0.0, NOISE_STD_DB, size=n)
+def _rng_noise(n: int, rng: np.random.Generator, noise_std_db: float = NOISE_STD_DB) -> np.ndarray:
+    return rng.normal(0.0, noise_std_db, size=n)
 
 
 def simulate_trace(
@@ -38,6 +38,8 @@ def simulate_trace(
     length_km: float = 40.0,
     step_km: float = 0.05,
     fault_position_km: float | None = None,
+    noise_std_db: float = NOISE_STD_DB,
+    loss_scale: float = 1.0,
     rng: np.random.Generator | None = None,
 ) -> Sample:
     if rng is None:
@@ -45,7 +47,7 @@ def simulate_trace(
 
     distance_km = np.arange(0.0, length_km, step_km)
     n = len(distance_km)
-    power = _baseline(distance_km) + _rng_noise(n, rng)
+    power = _baseline(distance_km) + _rng_noise(n, rng, noise_std_db=noise_std_db)
 
     if fault_type == "none":
         power = np.maximum(power, FLOOR_DB)
@@ -59,11 +61,11 @@ def simulate_trace(
         # Small Fresnel reflection spike right at the break, then straight to noise floor.
         spike = rng.uniform(1.5, 3.0)
         power[idx] += spike
-        power[idx + 1 :] = FLOOR_DB + _rng_noise(n - idx - 1, rng) * 0.5
+        power[idx + 1 :] = FLOOR_DB + _rng_noise(n - idx - 1, rng, noise_std_db=noise_std_db) * 0.5
 
     elif fault_type == "connector_loss":
         # A discrete step loss (bad connector/splice), trace continues past it.
-        step_loss_db = rng.uniform(0.8, 3.5)
+        step_loss_db = rng.uniform(0.8, 3.5) * loss_scale
         power[idx:] -= step_loss_db
 
     elif fault_type == "bend_loss":
@@ -71,7 +73,7 @@ def simulate_trace(
         # at baseline slope, permanently shifted down by the loss accumulated in the bend.
         window_km = rng.uniform(0.5, 2.5)
         window_end_idx = min(n, idx + int(window_km / step_km))
-        extra_alpha = rng.uniform(1.5, 4.0)  # extra dB/km inside the bend
+        extra_alpha = rng.uniform(1.5, 4.0) * loss_scale  # extra dB/km inside the bend
         bend_len = window_end_idx - idx
         ramp = np.linspace(0, extra_alpha * window_km, bend_len)
         power[idx:window_end_idx] -= ramp
@@ -81,7 +83,7 @@ def simulate_trace(
     elif fault_type == "amp_gain_drift":
         # Amplifier under-compensating: attenuation slope past this point is steeper,
         # with no discrete step at the transition (harder to localize precisely).
-        extra_alpha = rng.uniform(0.15, 0.45)  # additional dB/km beyond baseline
+        extra_alpha = rng.uniform(0.15, 0.45) * loss_scale  # additional dB/km beyond baseline
         tail = distance_km[idx:] - distance_km[idx]
         power[idx:] -= extra_alpha * tail
 

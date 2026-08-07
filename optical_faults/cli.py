@@ -11,6 +11,7 @@ from . import FAULT_TYPES
 from .dataset import generate_dataset, load_dataset, save_dataset
 from .model import render_markdown_report, train_and_evaluate
 from .simulate import simulate_trace
+from .stress import render_stress_report, run_domain_shift_stress
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +32,13 @@ def main(argv: list[str] | None = None) -> int:
     plot_p = sub.add_parser("plot-examples", help="save one example trace per fault type")
     plot_p.add_argument("--seed", type=int, default=1)
     plot_p.add_argument("--out", required=True, help="output directory for PNGs")
+
+    stress_p = sub.add_parser("stress", help="train once and evaluate shifted synthetic domains")
+    stress_p.add_argument("--train-n", type=int, default=800)
+    stress_p.add_argument("--test-n", type=int, default=300)
+    stress_p.add_argument("--seed", type=int, default=0)
+    stress_p.add_argument("--estimators", type=int, default=80)
+    stress_p.add_argument("--report", required=True, help="output markdown report path")
 
     args = parser.parse_args(argv)
 
@@ -77,6 +85,20 @@ def main(argv: list[str] | None = None) -> int:
             fig.savefig(os.path.join(args.out, f"{fault_type}.png"), dpi=120)
             plt.close(fig)
         print(f"wrote {len(FAULT_TYPES)} example plots -> {args.out}")
+        return 0
+
+    if args.command == "stress":
+        results = run_domain_shift_stress(
+            train_n=args.train_n,
+            test_n=args.test_n,
+            seed=args.seed,
+            n_estimators=args.estimators,
+        )
+        report = render_stress_report(results)
+        os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
+        with open(args.report, "w", encoding="utf-8") as handle:
+            handle.write(report)
+        print(report)
         return 0
 
     return 1
