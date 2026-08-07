@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "optical-fault-localization-ml"
 version = "0.1.0"
@@ -5,6 +9,9 @@ description = "Synthetic OTDR-trace fault classification and localization on coh
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["numpy>=1.26", "scikit-learn>=1.4", "matplotlib>=3.8", "joblib>=1.3"]
+
+[tool.setuptools]
+packages = ["optical_faults"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
