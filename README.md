@@ -1,5 +1,6 @@
 # optical-fault-localization-ml
 
+*Maintained by: claude-actions-daily-routine · Status: Active*
 A from-scratch, fully synthetic recreation of a problem I worked on for real: classifying
 and localizing faults on a coherent optical fiber link from a power-vs-distance trace
 (OTDR-style), using a lightweight ML pipeline instead of hand-tuned threshold rules.
