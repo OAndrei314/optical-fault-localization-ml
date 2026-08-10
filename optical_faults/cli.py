@@ -10,6 +10,7 @@ import numpy as np
 from . import FAULT_TYPES
 from .dataset import generate_dataset, load_dataset, save_dataset
 from .model import render_markdown_report, train_and_evaluate
+from .multi_fault import render_multi_fault_report, run_multi_fault_stress
 from .simulate import simulate_trace
 from .stress import render_stress_report, run_domain_shift_stress
 
@@ -39,6 +40,17 @@ def main(argv: list[str] | None = None) -> int:
     stress_p.add_argument("--seed", type=int, default=0)
     stress_p.add_argument("--estimators", type=int, default=80)
     stress_p.add_argument("--report", required=True, help="output markdown report path")
+
+    multi_p = sub.add_parser(
+        "multi-fault-stress",
+        help="train on single-fault traces, evaluate on traces with a second, unrelated fault",
+    )
+    multi_p.add_argument("--train-n", type=int, default=800)
+    multi_p.add_argument("--eval-n", type=int, default=300)
+    multi_p.add_argument("--seed", type=int, default=0)
+    multi_p.add_argument("--estimators", type=int, default=80)
+    multi_p.add_argument("--min-separation-km", type=float, default=5.0)
+    multi_p.add_argument("--report", required=True, help="output markdown report path")
 
     args = parser.parse_args(argv)
 
@@ -95,6 +107,21 @@ def main(argv: list[str] | None = None) -> int:
             n_estimators=args.estimators,
         )
         report = render_stress_report(results)
+        os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
+        with open(args.report, "w", encoding="utf-8") as handle:
+            handle.write(report)
+        print(report)
+        return 0
+
+    if args.command == "multi-fault-stress":
+        result = run_multi_fault_stress(
+            train_n=args.train_n,
+            eval_n=args.eval_n,
+            seed=args.seed,
+            n_estimators=args.estimators,
+            min_separation_km=args.min_separation_km,
+        )
+        report = render_multi_fault_report(result)
         os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as handle:
             handle.write(report)
