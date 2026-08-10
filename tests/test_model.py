@@ -17,12 +17,12 @@ def test_localization_error_is_bounded_on_a_40km_span():
     assert result.localization_mae_km < 7.0
 
 
-def test_markdown_report_contains_research_and_money_context():
+def test_markdown_report_contains_research_context_and_metrics():
     X, y_type, y_position = generate_dataset(n=120, seed=2)
     result = train_and_evaluate(X, y_type, y_position, seed=2, n_estimators=20)
 
     report = render_markdown_report(result, sample_count=len(X))
 
     assert "Research Question" in report
-    assert "Money Question" in report
+    assert "Engineering Evidence" in report
     assert "Fault-type accuracy" in report

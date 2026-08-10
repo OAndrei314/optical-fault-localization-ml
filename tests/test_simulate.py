@@ -1,6 +1,6 @@
 import numpy as np
 
-from optical_faults.simulate import FLOOR_DB, simulate_trace
+from optical_faults.simulate import FLOOR_DB, simulate_multi_fault_trace, simulate_trace
 
 
 def test_healthy_trace_is_roughly_monotonic_decreasing():
@@ -35,3 +35,41 @@ def test_unknown_fault_type_raises():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_multi_fault_reports_primary_type_and_position():
+    rng = np.random.default_rng(3)
+    sample = simulate_multi_fault_trace(
+        "connector_loss",
+        "bend_loss",
+        primary_position_km=25.0,
+        secondary_position_km=10.0,
+        rng=rng,
+    )
+    assert sample.fault_type == "connector_loss"
+    assert sample.fault_position_km == 25.0
+    assert sample.secondary_fault_type == "bend_loss"
+
+
+def test_multi_fault_none_type_rejected():
+    try:
+        simulate_multi_fault_trace("none", "connector_loss")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_upstream_fiber_cut_masks_downstream_secondary_fault():
+    # A fiber_cut early in the span drives everything past it to the noise floor -- a real
+    # cut hides any fault located further downstream, regardless of injection order.
+    rng = np.random.default_rng(7)
+    sample = simulate_multi_fault_trace(
+        "fiber_cut",
+        "connector_loss",
+        primary_position_km=8.0,
+        secondary_position_km=35.0,
+        min_separation_km=1.0,
+        rng=rng,
+    )
+    tail = sample.power_db[sample.distance_km > 9.0]
+    assert np.all(tail <= FLOOR_DB + 2.0)

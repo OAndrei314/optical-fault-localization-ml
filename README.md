@@ -18,10 +18,6 @@ not a reproduction of any real system.
 **Research question:** how far can synthetic optical-link fault traces go for training and
 stress-testing a fault classifier/localizer before domain shift breaks performance?
 
-**Money question:** the AI buildout increases dependence on optical links and
-transceivers. Faster optical fault localization reduces downtime, field-debug cost, and
-spare-module guesswork in expensive network deployments.
-
 **Engineering evidence:** the CLI reports fault-type accuracy, classification detail, and
 localization MAE in kilometers, with an optional markdown report artifact.
 
@@ -53,6 +49,9 @@ span), decide:
 - `optical_faults/model.py` — a `RandomForestClassifier` for fault type and a
   `RandomForestRegressor` for fault position (trained only on faulty examples), both from
   scikit-learn.
+- `optical_faults/multi_fault.py` — evaluates the single-fault-trained model on traces
+  that have a second, unrelated fault elsewhere on the span (`simulate_multi_fault_trace`
+  in `simulate.py`), to measure how much the one-event-per-trace assumption costs.
 
 ## Quickstart
 
@@ -72,6 +71,10 @@ python -m optical_faults.cli plot-examples --seed 1 --out examples/
 # Train once, then evaluate noisier / weaker-fault shifted synthetic domains
 python -m optical_faults.cli stress --train-n 800 --test-n 300 --seed 0 \
   --report reports/domain-shift.md
+
+# Train on single-fault traces, evaluate on traces with a second, unrelated fault
+python -m optical_faults.cli multi-fault-stress --train-n 800 --eval-n 300 --seed 0 \
+  --report reports/multi-fault.md
 ```
 
 ## Honest results
@@ -94,11 +97,25 @@ small run (`--train-n 300 --test-n 120 --seed 4 --estimators 30`), source accura
 it marks where synthetic data generation and feature design need more work before any
 robustness claim is credible.
 
+A second stress test targets the single-fault-per-trace assumption directly: train on
+ordinary single-fault traces, then evaluate on traces that also carry a second, unrelated
+fault elsewhere on the span (`multi-fault-stress`, `--train-n 800 --eval-n 300 --seed 0`).
+Fault-type accuracy fell from 1.000 to 0.537 and localization MAE grew from 1.05 km to
+6.29 km; a second run at `--seed 3` landed close by (0.994 → 0.480 accuracy, 0.92 km →
+6.82 km MAE), so this isn't seed noise. The dominant failure mode is structural, not a
+modeling gap: an upstream `fiber_cut` drives the whole downstream trace to the noise
+floor, so a fault located past it is genuinely unobservable from the trace alone — the
+hand-engineered features (single largest jump, two-half slope split) were never designed
+to separate two events, and they don't.
+
 ## Status / next steps
 
-Single-fault-per-trace only; multi-fault traces, a proper OTDR reflectance model
-(Fresnel reflections at connectors), and calibration against public/realistic trace
-statistics are the natural next extensions.
+Single-fault localization and the two stress tests (domain shift, multi-fault
+interference) are done and honestly measured. What's left: a proper OTDR reflectance
+model (Fresnel reflections at connectors), calibration against public/realistic trace
+statistics, and — if multi-fault traces need to be *handled* well rather than just
+measured — a multi-label classifier or per-segment sliding-window features instead of the
+current single-event feature vector.
 
 ## License
 
