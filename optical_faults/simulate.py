@@ -16,6 +16,19 @@ LAUNCH_POWER_DB = 0.0
 NOISE_STD_DB = 0.08
 FLOOR_DB = -45.0  # detector noise floor
 
+# Fresnel power reflectance at an unmated glass-air interface (SMF-28 core index at
+# 1550nm, n ~= 1.4682): R = ((n-1)/(n+1))**2. This is the physical reason a poorly
+# mated connector (dirty, misaligned, or a flat PC polish instead of angle-polished
+# APC) reflects a visible spike back down the fiber, on top of its insertion loss,
+# while a clean, index-matched or angle-polished connector reflects almost nothing.
+FIBER_CORE_INDEX = 1.4682
+FRESNEL_REFLECTANCE = ((FIBER_CORE_INDEX - 1) / (FIBER_CORE_INDEX + 1)) ** 2
+FRESNEL_REFLECTANCE_DB = 10 * np.log10(FRESNEL_REFLECTANCE)  # ~ -14.4 dB
+# Scales the full glass-air reflectance down to a plausible spike height in a logged
+# OTDR trace (captured backscatter, not the raw one-way interface reflectance) --
+# a calibration knob, not a claimed instrument-accurate value.
+CONNECTOR_REFLECTANCE_TRACE_SCALE = 0.3
+
 
 @dataclass(frozen=True)
 class Sample:
@@ -54,8 +67,17 @@ def _inject_fault(
         power[idx + 1 :] = FLOOR_DB + _rng_noise(n - idx - 1, rng, noise_std_db=noise_std_db) * 0.5
 
     elif fault_type == "connector_loss":
-        # A discrete step loss (bad connector/splice), trace continues past it.
+        # A discrete step loss (bad connector/splice), trace continues past it. A
+        # poorly-mated connector also partially reflects light back toward the
+        # source (Fresnel reflection, see FRESNEL_REFLECTANCE_DB above), producing a
+        # brief spike right at the connector; a well-mated/APC connector shows
+        # almost none. `mating_quality` in [0, 1] interpolates between those regimes.
         step_loss_db = rng.uniform(0.8, 3.5) * loss_scale
+        mating_quality = rng.uniform(0.0, 1.0)
+        reflection_spike_db = (
+            mating_quality * abs(FRESNEL_REFLECTANCE_DB) * CONNECTOR_REFLECTANCE_TRACE_SCALE
+        )
+        power[idx] += reflection_spike_db
         power[idx:] -= step_loss_db
 
     elif fault_type == "bend_loss":
@@ -157,9 +179,17 @@ def simulate_multi_fault_trace(
         [(primary_position_km, primary_fault_type), (secondary_position_km, secondary_fault_type)],
         key=lambda event: event[0],
     )
+    cut_idx = None
     for position_km, fault_type in events:
         idx = int(position_km / step_km)
+        if cut_idx is not None and idx > cut_idx:
+            # No light reaches past an upstream full break, so nothing downstream of
+            # it -- including a reflection spike -- can show up in the trace, even
+            # though the ground-truth label still records that a fault is there.
+            continue
         _inject_fault(power, distance_km, step_km, idx, fault_type, rng, noise_std_db, loss_scale)
+        if fault_type == "fiber_cut":
+            cut_idx = idx
 
     power = np.maximum(power, FLOOR_DB)
     return Sample(distance_km, power, primary_fault_type, primary_position_km, secondary_fault_type)

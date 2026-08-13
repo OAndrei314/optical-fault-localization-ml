@@ -18,6 +18,7 @@ FEATURE_NAMES = [
     "slope_diff_abs",
     "frac_near_floor",
     "total_span_loss_db",
+    "frac_near_floor_after_jump",
 ]
 
 
@@ -57,6 +58,16 @@ def extract_features(distance_km: np.ndarray, power_db: np.ndarray) -> np.ndarra
     frac_near_floor = float(np.mean(power_db <= floor_thresh))
     total_span_loss = float(power_db[0] - power_db[-1])
 
+    # Distinguishes a permanent collapse to the noise floor right after the biggest
+    # jump (a fiber_cut) from a brief reflection spike followed by the trace
+    # continuing at a moderately reduced level (a connector_loss's Fresnel spike,
+    # see simulate.py) -- both can produce a similarly large single-step jump, but
+    # only one of them stays pinned at the floor afterward.
+    after_jump = power_db[jump_idx + 1 :]
+    frac_near_floor_after_jump = (
+        float(np.mean(after_jump <= floor_thresh)) if len(after_jump) > 0 else 0.0
+    )
+
     return np.array(
         [
             overall_slope,
@@ -69,6 +80,7 @@ def extract_features(distance_km: np.ndarray, power_db: np.ndarray) -> np.ndarra
             abs(slope1 - slope2),
             frac_near_floor,
             total_span_loss,
+            frac_near_floor_after_jump,
         ],
         dtype=float,
     )
