@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import FAULT_TYPES
-from .features import extract_features
+from .features import FEATURE_NAMES, extract_features
 from .simulate import simulate_trace
 
 
@@ -18,7 +18,7 @@ def generate_dataset(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Returns (X, y_type, y_position) where y_position is NaN for the 'none' class."""
     rng = np.random.default_rng(seed)
-    X = np.zeros((n, 10))
+    X = np.zeros((n, len(FEATURE_NAMES)))
     y_type = np.empty(n, dtype=object)
     y_position = np.full(n, np.nan)
 
