@@ -92,6 +92,7 @@ def test_multi_fault_reports_primary_type_and_position():
     assert sample.fault_type == "connector_loss"
     assert sample.fault_position_km == 25.0
     assert sample.secondary_fault_type == "bend_loss"
+    assert sample.secondary_fault_position_km == 10.0
 
 
 def test_multi_fault_none_type_rejected():
