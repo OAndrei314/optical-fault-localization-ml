@@ -56,6 +56,18 @@ span), decide:
 - `optical_faults/multi_fault.py` — evaluates the single-fault-trained model on traces
   that have a second, unrelated fault elsewhere on the span (`simulate_multi_fault_trace`
   in `simulate.py`), to measure how much the one-event-per-trace assumption costs.
+- `optical_faults/events.py` — an attempt to actually *handle* multi-fault traces
+  instead of just measuring the damage: a changepoint scan slides a before/after
+  window across the trace and scores every position by (single-sample jump) +
+  (before/after slope change), picks up to `top_k` local maxima with non-max
+  suppression, and classifies each one independently using the existing feature
+  extractor computed on a short local window instead of the full 40km span. Runs the
+  scan at two window scales (narrow for precise jump localization, wide to catch
+  `amp_gain_drift`'s weak slope-only signature — a narrow window alone detects 0/50 of
+  those, a wide one 47/50) and merges the results.
+- `optical_faults/multi_event.py` — evaluates that pipeline on two-fault traces,
+  scored against *both* ground-truth events (not just the one the old pipeline is told
+  to look for), via greedy nearest-position matching.
 
 ## Quickstart
 
@@ -79,6 +91,10 @@ python -m optical_faults.cli stress --train-n 800 --test-n 300 --seed 0 \
 # Train on single-fault traces, evaluate on traces with a second, unrelated fault
 python -m optical_faults.cli multi-fault-stress --train-n 800 --eval-n 300 --seed 0 \
   --report reports/multi-fault.md
+
+# Changepoint-scan-and-classify: detect + classify BOTH events on a two-fault trace
+python -m optical_faults.cli multi-event-detect --train-n 800 --n-traces 300 --seed 0 \
+  --report reports/multi-event.md
 ```
 
 ## Honest results
@@ -129,14 +145,53 @@ to the noise floor, so a fault located past it is genuinely unobservable from th
 alone — the hand-engineered features (single largest jump, two-half slope split) were
 never designed to separate two events, and they don't.
 
+### Multi-event detection: handling the multi-fault case, not just measuring it
+
+The previous README ended with "a multi-label classifier or per-segment sliding-window
+features are the natural next steps if multi-fault traces need to be *handled* well
+rather than just measured." That's what `events.py` and `multi_event.py` do: a
+changepoint scan proposes up to two candidate event positions per trace, and each is
+classified independently on a local window, so the pipeline is no longer told in
+advance that there's exactly one event to find.
+
+On 300 two-fault evaluation traces (600 ground-truth events, `--seed 0`, otherwise
+default parameters), matched against ground truth by nearest-position within 3km:
+**73.7% detection recall** (442/600 ground-truth events had a matching detected
+candidate), **73.5% fault-type accuracy on the matched events**, **0.691 km
+localization MAE on the matched events**, and **zero false positives** (every detected
+candidate matched a real event). Across seeds 0–3, recall stayed in 0.69–0.74, type
+accuracy in 0.69–0.735, MAE in 0.69–0.75 km, with false positives at 0 every time —
+this isn't a lucky seed.
+
+Read those numbers against `multi-fault-stress`'s baseline carefully, because they're
+not measuring quite the same thing: the old pipeline is told which fault to look for
+and scores 0.490 accuracy / 5.946 km MAE finding *that one*; this pipeline isn't told
+anything and has to find *both*, and it localizes the ones it does find over 8x more
+precisely (0.691 km vs. 5.946 km MAE) while also recovering a correct type on about
+three-quarters of them. The two numbers that keep this honest: recall tops out well
+short of 1.0 (the same physical masking behind the old pipeline's failures — an
+upstream `fiber_cut` makes anything downstream genuinely unobservable, not just hard to
+find), and matched-event type accuracy (0.735) is well below the standalone local
+classifier's held-out accuracy on known, uncontaminated fault positions (1.0, verified
+separately) — some of that gap is detection-position slop feeding a slightly
+off-center local window into the classifier, and some is a second fault sitting inside
+the first fault's window when `min_separation_km` (5km default) is smaller than the
+wide-scale window (4km each side, 8km total): the two faults' local feature windows
+can genuinely overlap.
+
 ## Status / next steps
 
-Single-fault localization, the Fresnel connector-reflectance model, and both stress tests
-(domain shift, multi-fault interference) are done and honestly measured. What's left:
-calibration against public/realistic OTDR trace statistics (return-loss distributions for
-real connector grades), and — if multi-fault traces need to be *handled* well rather than
-just measured — a multi-label classifier or per-segment sliding-window features instead of
-the current single-event feature vector.
+Single-fault localization, the Fresnel connector-reflectance model, both stress tests
+(domain shift, multi-fault interference), and a first pass at actually *handling*
+multi-fault traces (changepoint-scan-and-classify, `events.py`/`multi_event.py`) are
+done and honestly measured. What's left: calibration against public/realistic OTDR
+trace statistics (return-loss distributions for real connector grades), and closing the
+gap the multi-event results surfaced — either a `min_separation_km` vs. window-size
+interaction fix (shrink the wide-scale window, or make the local classifier aware that
+its window might be contaminated) or a proper joint two-event model instead of
+independent per-candidate classification, to close the ~26-point gap between matched
+type accuracy (0.735) and the standalone classifier's accuracy on clean, uncontaminated
+windows (1.0).
 
 ## License
 

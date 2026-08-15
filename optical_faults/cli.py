@@ -10,6 +10,7 @@ import numpy as np
 from . import FAULT_TYPES
 from .dataset import generate_dataset, load_dataset, save_dataset
 from .model import render_markdown_report, train_and_evaluate
+from .multi_event import render_multi_event_report, run_multi_event_detection
 from .multi_fault import render_multi_fault_report, run_multi_fault_stress
 from .simulate import simulate_trace
 from .stress import render_stress_report, run_domain_shift_stress
@@ -51,6 +52,19 @@ def main(argv: list[str] | None = None) -> int:
     multi_p.add_argument("--estimators", type=int, default=80)
     multi_p.add_argument("--min-separation-km", type=float, default=5.0)
     multi_p.add_argument("--report", required=True, help="output markdown report path")
+
+    event_p = sub.add_parser(
+        "multi-event-detect",
+        help="changepoint-scan-and-classify pipeline: detect and classify both events on a "
+        "two-fault trace, instead of only measuring degradation on the labeled one",
+    )
+    event_p.add_argument("--train-n", type=int, default=800)
+    event_p.add_argument("--n-traces", type=int, default=300)
+    event_p.add_argument("--seed", type=int, default=0)
+    event_p.add_argument("--estimators", type=int, default=100)
+    event_p.add_argument("--min-separation-km", type=float, default=5.0)
+    event_p.add_argument("--match-tolerance-km", type=float, default=3.0)
+    event_p.add_argument("--report", required=True, help="output markdown report path")
 
     args = parser.parse_args(argv)
 
@@ -122,6 +136,22 @@ def main(argv: list[str] | None = None) -> int:
             min_separation_km=args.min_separation_km,
         )
         report = render_multi_fault_report(result)
+        os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
+        with open(args.report, "w", encoding="utf-8") as handle:
+            handle.write(report)
+        print(report)
+        return 0
+
+    if args.command == "multi-event-detect":
+        result = run_multi_event_detection(
+            train_n=args.train_n,
+            n_traces=args.n_traces,
+            seed=args.seed,
+            n_estimators=args.estimators,
+            min_separation_km=args.min_separation_km,
+            match_tolerance_km=args.match_tolerance_km,
+        )
+        report = render_multi_event_report(result)
         os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as handle:
             handle.write(report)

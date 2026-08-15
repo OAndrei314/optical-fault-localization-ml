@@ -37,6 +37,7 @@ class Sample:
     fault_type: str
     fault_position_km: float | None  # None for "none"
     secondary_fault_type: str | None = None  # set only for simulate_multi_fault_trace
+    secondary_fault_position_km: float | None = None  # set only for simulate_multi_fault_trace
 
 
 def _baseline(distance_km: np.ndarray) -> np.ndarray:
@@ -192,4 +193,11 @@ def simulate_multi_fault_trace(
             cut_idx = idx
 
     power = np.maximum(power, FLOOR_DB)
-    return Sample(distance_km, power, primary_fault_type, primary_position_km, secondary_fault_type)
+    return Sample(
+        distance_km,
+        power,
+        primary_fault_type,
+        primary_position_km,
+        secondary_fault_type,
+        secondary_position_km,
+    )
