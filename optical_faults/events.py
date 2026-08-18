@@ -16,6 +16,12 @@ picks), then classify each candidate independently using the *same* hand-enginee
 feature extractor from `features.py`, but computed on a short local window around the
 candidate rather than the full 40km span -- and a classifier trained on local windows
 around known single-fault positions, so train/inference feature distributions match.
+
+A fixed window width isn't enough on its own: two candidates closer together than the
+window is wide can each end up with the other's fault signature inside their feature
+window. `bounded_half_window_km` clips a candidate's window against its nearest other
+candidate, and `train_local_event_classifier` trains across a range of window widths
+so the classifier has actually seen what a clipped window looks like.
 """
 from __future__ import annotations
 
@@ -33,8 +39,10 @@ _INJECTABLE_FAULT_TYPES = [f for f in FAULT_TYPES if f != "none"]
 
 DEFAULT_SCAN_WINDOW_KM = 3.0
 DEFAULT_HALF_WINDOW_KM = 6.0
+DEFAULT_MIN_HALF_WINDOW_KM = 1.5
 DEFAULT_MIN_SEPARATION_KM = 3.0
 DEFAULT_THRESHOLD_DB = 1.0
+DEFAULT_NEIGHBOR_MARGIN_KM = 0.5
 
 # A single scan window trades off position precision against recall: a narrow window
 # localizes discrete-jump faults (fiber_cut, connector_loss, bend_loss) tightly, but
@@ -169,10 +177,38 @@ def extract_local_features(
     return extract_features(distance_km[mask], power_db[mask])
 
 
+def bounded_half_window_km(
+    center_km: float,
+    other_positions_km: list[float],
+    max_half_window_km: float = DEFAULT_HALF_WINDOW_KM,
+    min_half_window_km: float = DEFAULT_MIN_HALF_WINDOW_KM,
+    margin_km: float = DEFAULT_NEIGHBOR_MARGIN_KM,
+) -> float:
+    """Shrinks the local classification window when another detected event sits close
+    enough that a full-width window would cross into its territory.
+
+    This is the fix for the gap the multi-event report surfaced: with a fixed 6km
+    half-window and a 5km `min_separation_km`, two adjacent candidates' windows
+    routinely overlapped, so `extract_local_features` was picking up a second fault's
+    signature on top of the one it was meant to describe. Halving the gap to each
+    other candidate (minus a small margin) keeps a candidate's window inside its own
+    territory; `min_half_window_km` stops it from shrinking to the point of being
+    uninformative for very close neighbors.
+    """
+    half = max_half_window_km
+    for other_km in other_positions_km:
+        gap_km = abs(other_km - center_km)
+        if gap_km <= 0:
+            continue
+        half = min(half, gap_km / 2.0 - margin_km)
+    return max(min_half_window_km, half)
+
+
 @dataclass
 class LocalEventClassifier:
     classifier: RandomForestClassifier
     half_window_km: float
+    min_half_window_km: float = DEFAULT_MIN_HALF_WINDOW_KM
 
 
 def train_local_event_classifier(
@@ -180,10 +216,19 @@ def train_local_event_classifier(
     seed: int = 0,
     n_estimators: int = 100,
     half_window_km: float = DEFAULT_HALF_WINDOW_KM,
+    min_half_window_km: float = DEFAULT_MIN_HALF_WINDOW_KM,
 ) -> LocalEventClassifier:
     """Trains a fault-type classifier on local windows centered on the *known* fault
     position of ordinary single-fault traces -- the train-time analogue of what
-    `detect_changepoints` gives at inference time."""
+    `detect_changepoints` gives at inference time.
+
+    Each example's window width is drawn uniformly from
+    `[min_half_window_km, half_window_km]` rather than fixed at `half_window_km`, so
+    the classifier is trained on the same range of window widths that
+    `bounded_half_window_km` can hand it at inference when a neighboring candidate
+    forces a narrower window. Training only at the full width and then evaluating on
+    clipped windows would be its own train/inference mismatch.
+    """
     rng = np.random.default_rng(seed)
     X = np.zeros((train_n, len(FEATURE_NAMES)))
     y_type = np.empty(train_n, dtype=object)
@@ -191,14 +236,15 @@ def train_local_event_classifier(
     for i in range(train_n):
         fault_type = _INJECTABLE_FAULT_TYPES[rng.integers(0, len(_INJECTABLE_FAULT_TYPES))]
         sample = simulate_trace(fault_type, rng=rng)
+        sample_half_window_km = rng.uniform(min_half_window_km, half_window_km)
         X[i] = extract_local_features(
-            sample.distance_km, sample.power_db, sample.fault_position_km, half_window_km
+            sample.distance_km, sample.power_db, sample.fault_position_km, sample_half_window_km
         )
         y_type[i] = sample.fault_type
 
     clf = RandomForestClassifier(n_estimators=n_estimators, random_state=seed)
     clf.fit(X, y_type)
-    return LocalEventClassifier(clf, half_window_km)
+    return LocalEventClassifier(clf, half_window_km, min_half_window_km)
 
 
 def detect_and_classify_events(
@@ -210,11 +256,21 @@ def detect_and_classify_events(
     top_k: int = 2,
 ) -> list[tuple[float, str]]:
     """Runs multi-scale changepoint detection then classifies each candidate locally.
-    Returns a list of (position_km, predicted_fault_type), sorted by position."""
+    Returns a list of (position_km, predicted_fault_type), sorted by position.
+
+    Each candidate's feature window is clipped by `bounded_half_window_km` against
+    every *other* candidate's position, so classifying one detected event doesn't
+    accidentally use another detected event's signature as part of its own features.
+    """
     candidates = detect_changepoints_multiscale(distance_km, power_db, scales, min_separation_km, top_k)
+    positions_km = [c.position_km for c in candidates]
     results = []
     for c in candidates:
-        features = extract_local_features(distance_km, power_db, c.position_km, model.half_window_km)
+        other_positions_km = [p for p in positions_km if p != c.position_km]
+        half_window_km = bounded_half_window_km(
+            c.position_km, other_positions_km, model.half_window_km, model.min_half_window_km
+        )
+        features = extract_local_features(distance_km, power_db, c.position_km, half_window_km)
         pred_type = model.classifier.predict(features.reshape(1, -1))[0]
         results.append((c.position_km, str(pred_type)))
     return results
