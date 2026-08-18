@@ -167,31 +167,67 @@ Read those numbers against `multi-fault-stress`'s baseline carefully, because th
 not measuring quite the same thing: the old pipeline is told which fault to look for
 and scores 0.490 accuracy / 5.946 km MAE finding *that one*; this pipeline isn't told
 anything and has to find *both*, and it localizes the ones it does find over 8x more
-precisely (0.691 km vs. 5.946 km MAE) while also recovering a correct type on about
-three-quarters of them. The two numbers that keep this honest: recall tops out well
-short of 1.0 (the same physical masking behind the old pipeline's failures — an
-upstream `fiber_cut` makes anything downstream genuinely unobservable, not just hard to
-find), and matched-event type accuracy (0.735) is well below the standalone local
-classifier's held-out accuracy on known, uncontaminated fault positions (1.0, verified
-separately) — some of that gap is detection-position slop feeding a slightly
-off-center local window into the classifier, and some is a second fault sitting inside
-the first fault's window when `min_separation_km` (5km default) is smaller than the
-wide-scale window (4km each side, 8km total): the two faults' local feature windows
-can genuinely overlap.
+precisely (0.691 km vs. 5.946 km MAE). Recall tops out well short of 1.0 for a physical
+reason, not a detector weakness: an upstream `fiber_cut` makes anything downstream
+genuinely unobservable, the same masking behind the old pipeline's failures.
+
+### Closing the window-contamination gap
+
+The matched-event type accuracy above (0.735) used to be a lot further below the
+standalone local classifier's accuracy on known, uncontaminated fault positions (1.0,
+verified separately in `test_local_event_classifier_beats_random_baseline_on_known_positions`).
+The cause was exactly what it looked like: with a fixed 6km half-window and a 5km
+`min_separation_km`, two candidates 5-8km apart routinely had overlapping feature
+windows, so classifying one candidate could pick up the other fault's signature.
+
+`events.py` now fixes this two ways: `bounded_half_window_km` clips a candidate's
+window against its nearest *other* detected candidate (half the gap between them,
+minus a small margin), and `train_local_event_classifier` trains on windows of
+*varying* width (uniformly sampled between 1.5km and 6km) instead of only the full
+6km width, so the classifier has actually seen what a clipped window looks like
+instead of being evaluated on a distribution it never trained on.
+
+Re-running `multi-event-detect` at the same config as before (`--train-n 800
+--n-traces 300 --min-separation-km 5.0`, seeds 0-3) after the fix:
+
+| seed | before | after |
+|------|--------|-------|
+| 0    | 0.735  | 0.835 |
+| 1    | 0.728  | 0.902 |
+| 2    | 0.709  | 0.861 |
+| 3    | 0.689  | 0.929 |
+
+Detection recall and localization MAE on matched events are unchanged (identical to
+the decimal across all four seeds) — only the classification stage changed, so that's
+the expected signature of a working fix, not a coincidence.
+
+An ablation (isolating variable-width *training* from window *clipping* at inference,
+same seeds) attributes most of the gain to training on variable widths: 0.817-0.913
+with variable-width training alone but no clipping (still using the full 6km window at
+inference), vs. 0.835-0.929 with both. Clipping alone is a smaller, consistent +1-2
+point improvement on top — the bigger lesson was that the *classifier itself* had
+never been trained on anything but pristine, uncontaminated, full-width windows, so it
+generalized poorly to any narrower or noisier window shape, independent of whether
+that narrower window was clipped for a good reason.
+
+The remaining gap to 1.0 is smaller now but not zero: detection-position slop still
+feeds a slightly off-center window into the classifier, and windows can still overlap
+when `min_half_window_km` (1.5km) plus margin doesn't fully separate two faults closer
+than ~4km apart. `bounded_half_window_km` and the variable-width training are both
+exercised directly in `tests/test_events.py`, and `tests/test_multi_event.py` guards
+against a regression back toward the old ~0.7-0.82 ceiling.
 
 ## Status / next steps
 
 Single-fault localization, the Fresnel connector-reflectance model, both stress tests
-(domain shift, multi-fault interference), and a first pass at actually *handling*
-multi-fault traces (changepoint-scan-and-classify, `events.py`/`multi_event.py`) are
-done and honestly measured. What's left: calibration against public/realistic OTDR
-trace statistics (return-loss distributions for real connector grades), and closing the
-gap the multi-event results surfaced — either a `min_separation_km` vs. window-size
-interaction fix (shrink the wide-scale window, or make the local classifier aware that
-its window might be contaminated) or a proper joint two-event model instead of
-independent per-candidate classification, to close the ~26-point gap between matched
-type accuracy (0.735) and the standalone classifier's accuracy on clean, uncontaminated
-windows (1.0).
+(domain shift, multi-fault interference), a first pass at actually *handling*
+multi-fault traces (changepoint-scan-and-classify), and the window-contamination fix
+that closed most of the matched-type-accuracy gap are done and honestly measured.
+What's left: calibration against public/realistic OTDR trace statistics (return-loss
+distributions for real connector grades), and — for faults closer than
+`bounded_half_window_km` can fully separate — a proper joint two-event model instead
+of independent per-candidate classification, since clipping has a floor
+(`min_half_window_km`) below which it can't fully prevent overlap.
 
 ## License
 

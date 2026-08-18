@@ -17,6 +17,19 @@ def test_multi_event_detection_reports_valid_metrics():
         assert result.matched_localization_mae_km >= 0.0
 
 
+def test_matched_type_accuracy_reflects_window_contamination_fix():
+    # Regression guard for the window-clipping + variable-width-training fix in
+    # events.py: before it, matched_type_accuracy at this exact (seed, size) config
+    # topped out at 0.818 across seeds 1/2/5/6 (0.741/0.714/0.818/0.739). After it,
+    # the same seeds land at 0.83-0.92. 0.78 sits comfortably above the old ceiling
+    # without being so close to the new floor that normal RandomForest variance
+    # could flake it.
+    result = run_multi_event_detection(
+        train_n=200, n_traces=60, seed=1, n_estimators=20, min_separation_km=5.0
+    )
+    assert result.matched_type_accuracy > 0.78
+
+
 def test_multi_event_report_contains_comparison_context():
     result = run_multi_event_detection(train_n=150, n_traces=40, seed=2, n_estimators=15)
 
