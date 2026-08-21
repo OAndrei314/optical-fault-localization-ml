@@ -95,6 +95,11 @@ python -m optical_faults.cli multi-fault-stress --train-n 800 --eval-n 300 --see
 # Changepoint-scan-and-classify: detect + classify BOTH events on a two-fault trace
 python -m optical_faults.cli multi-event-detect --train-n 800 --n-traces 300 --seed 0 \
   --report reports/multi-event.md
+
+# Does the multi-event detector spuriously report a second event on single-fault or
+# healthy traces? Sweeps min_separation_km to show the false-split-vs-close-fault tradeoff
+python -m optical_faults.cli overdetection-check --n-per-type 300 --seed 0 \
+  --report reports/overdetection.md
 ```
 
 ## Honest results
@@ -217,17 +222,58 @@ than ~4km apart. `bounded_half_window_km` and the variable-width training are bo
 exercised directly in `tests/test_events.py`, and `tests/test_multi_event.py` guards
 against a regression back toward the old ~0.7-0.82 ceiling.
 
+### Over-detection: does the detector cry wolf on traces that only have one fault?
+
+Every result above scores the multi-event pipeline on traces that genuinely have two
+faults. That leaves an obvious, more common case unmeasured: fed a trace with only
+*one* real fault, or none at all, does `detect_changepoints_multiscale` spuriously
+report a second event? `optical_faults/overdetection.py` checks this directly —
+no classifier involved, since over-detection is purely a property of the changepoint
+scan, not the classification stage on top of it.
+
+Running the detector (no classifier) on 300 traces per fault type at each of three
+`min_separation_km` settings (`--n-per-type 300 --seed 0`):
+
+| min_separation_km | none | fiber_cut | connector_loss | bend_loss | amp_gain_drift |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 3.0 | 0.000 | 0.000 | 0.310 | 0.333 | 0.000 |
+| 4.0 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 5.0 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+
+At `events.py`'s own `DEFAULT_MIN_SEPARATION_KM` (3.0 — the value anyone gets calling
+`detect_changepoints_multiscale` without overriding it), a genuinely single-fault
+`bend_loss` or `connector_loss` trace gets reported as two events roughly a third of
+the time. `bend_loss` has a real structural reason: its loss ramps in over
+`window_km`, so a single fault has two physical transitions (ramp start, ramp end),
+and if they're farther apart than `min_separation_km`, non-max suppression can't tell
+they're the same event. `connector_loss` is subtler: it's a single step discontinuity,
+but `detect_changepoints`'s before/after slope term is an OLS fit over a
+`window_km`-wide box, so the step biases that slope estimate over a `window_km`-wide
+range around it, not just exactly at it — which can produce a second local maximum a
+few km away. `fiber_cut`, `amp_gain_drift`, and healthy traces stay at 0.000 at every
+separation tested, because neither a total-loss collapse nor a smooth slope-only
+drift gives the scan two separable local maxima to find.
+
+This is exactly why `multi_event.py`'s own evaluation and the CLI both default to
+`min_separation_km=5.0` rather than the module-level 3.0 default — that choice was
+already load-bearing, just never measured or written down before now. It also puts a
+number on the other side of the "closing the window-contamination gap" tradeoff:
+shrinking `min_separation_km` to resolve two *real*, closely-spaced faults directly
+buys more single-fault traces getting reported as two.
+
 ## Status / next steps
 
 Single-fault localization, the Fresnel connector-reflectance model, both stress tests
 (domain shift, multi-fault interference), a first pass at actually *handling*
-multi-fault traces (changepoint-scan-and-classify), and the window-contamination fix
-that closed most of the matched-type-accuracy gap are done and honestly measured.
-What's left: calibration against public/realistic OTDR trace statistics (return-loss
-distributions for real connector grades), and — for faults closer than
-`bounded_half_window_km` can fully separate — a proper joint two-event model instead
-of independent per-candidate classification, since clipping has a floor
-(`min_half_window_km`) below which it can't fully prevent overlap.
+multi-fault traces (changepoint-scan-and-classify), the window-contamination fix that
+closed most of the matched-type-accuracy gap, and the single-fault over-detection
+check that quantifies why `min_separation_km=5.0` was the right default are done and
+honestly measured. What's left: calibration against public/realistic OTDR trace
+statistics (return-loss distributions for real connector grades), and — for faults
+closer than `bounded_half_window_km` can fully separate — a proper joint two-event
+model instead of independent per-candidate classification, since clipping has a floor
+(`min_half_window_km`) below which it can't fully prevent overlap, and shrinking
+`min_separation_km` to get there now has a measured single-fault false-split cost.
 
 ## License
 
