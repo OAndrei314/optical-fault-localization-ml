@@ -12,6 +12,7 @@ from .dataset import generate_dataset, load_dataset, save_dataset
 from .model import render_markdown_report, train_and_evaluate
 from .multi_event import render_multi_event_report, run_multi_event_detection
 from .multi_fault import render_multi_fault_report, run_multi_fault_stress
+from .overdetection import DEFAULT_SEPARATIONS_KM, render_overdetection_report, run_overdetection_sweep
 from .simulate import simulate_trace
 from .stress import render_stress_report, run_domain_shift_stress
 
@@ -65,6 +66,18 @@ def main(argv: list[str] | None = None) -> int:
     event_p.add_argument("--min-separation-km", type=float, default=5.0)
     event_p.add_argument("--match-tolerance-km", type=float, default=3.0)
     event_p.add_argument("--report", required=True, help="output markdown report path")
+
+    overdetect_p = sub.add_parser(
+        "overdetection-check",
+        help="check how often the multi-event detector reports a spurious second event on "
+        "single-fault or healthy traces, across a sweep of min_separation_km values",
+    )
+    overdetect_p.add_argument("--n-per-type", type=int, default=200)
+    overdetect_p.add_argument("--seed", type=int, default=0)
+    overdetect_p.add_argument(
+        "--separations-km", type=float, nargs="+", default=list(DEFAULT_SEPARATIONS_KM)
+    )
+    overdetect_p.add_argument("--report", required=True, help="output markdown report path")
 
     args = parser.parse_args(argv)
 
@@ -152,6 +165,19 @@ def main(argv: list[str] | None = None) -> int:
             match_tolerance_km=args.match_tolerance_km,
         )
         report = render_multi_event_report(result)
+        os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
+        with open(args.report, "w", encoding="utf-8") as handle:
+            handle.write(report)
+        print(report)
+        return 0
+
+    if args.command == "overdetection-check":
+        results = run_overdetection_sweep(
+            n_per_type=args.n_per_type,
+            seed=args.seed,
+            separations_km=tuple(args.separations_km),
+        )
+        report = render_overdetection_report(results)
         os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as handle:
             handle.write(report)
