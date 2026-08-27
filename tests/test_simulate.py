@@ -1,8 +1,12 @@
 import numpy as np
 
 from optical_faults.simulate import (
+    BEST_CASE_RETURN_LOSS_DB,
+    CONNECTOR_GRADES,
     FLOOR_DB,
     FRESNEL_REFLECTANCE_DB,
+    UNMATED_RETURN_LOSS_DB,
+    sample_connector_mating_quality,
     simulate_multi_fault_trace,
     simulate_trace,
 )
@@ -70,6 +74,50 @@ def test_connector_loss_can_show_a_reflection_spike_above_the_settled_level():
         if sample.power_db[idx] > settled + 0.5:
             spikes_seen += 1
     assert spikes_seen >= 5
+
+
+def test_connector_grade_prevalence_sums_to_one():
+    total = sum(prevalence for _, _, prevalence in CONNECTOR_GRADES.values())
+    assert abs(total - 1.0) < 1e-9
+
+
+def test_connector_grade_return_loss_ordering_is_pc_worse_than_upc_worse_than_apc():
+    # Ordering matters more than the exact numbers: a better polish grade should
+    # have a strictly higher typical return loss (less reflective).
+    pc_mean = CONNECTOR_GRADES["PC"][0]
+    upc_mean = CONNECTOR_GRADES["UPC"][0]
+    apc_mean = CONNECTOR_GRADES["APC"][0]
+    assert pc_mean < upc_mean < apc_mean
+
+
+def test_sample_connector_mating_quality_stays_in_unit_interval():
+    rng = np.random.default_rng(0)
+    for _ in range(2000):
+        mq = sample_connector_mating_quality(rng)
+        assert 0.0 <= mq <= 1.0
+
+
+def test_sample_connector_mating_quality_endpoints_match_return_loss_bounds():
+    # A return loss right at the unmated floor should map to mating_quality ~ 1.0;
+    # right at the best-case ceiling should map to ~ 0.0. Exercise this through the
+    # same linear mapping the sampler uses, rather than depending on random draws
+    # landing exactly on the (clipped) boundary.
+    span = BEST_CASE_RETURN_LOSS_DB - UNMATED_RETURN_LOSS_DB
+    worst_case_mq = (BEST_CASE_RETURN_LOSS_DB - UNMATED_RETURN_LOSS_DB) / span
+    best_case_mq = (BEST_CASE_RETURN_LOSS_DB - BEST_CASE_RETURN_LOSS_DB) / span
+    assert worst_case_mq == 1.0
+    assert best_case_mq == 0.0
+
+
+def test_sample_connector_mating_quality_reflects_realistic_grade_mix():
+    # The field population here is APC/UPC-dominant (85% of prevalence weight), so
+    # the average drawn mating_quality should sit well below the 0.5 midpoint a
+    # flat Uniform(0, 1) draw would give -- this is the actual calibration effect,
+    # not just a bounds check.
+    rng = np.random.default_rng(1)
+    draws = [sample_connector_mating_quality(rng) for _ in range(5000)]
+    mean_mq = float(np.mean(draws))
+    assert mean_mq < 0.35
 
 
 def test_unknown_fault_type_raises():
