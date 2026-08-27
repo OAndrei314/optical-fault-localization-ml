@@ -29,6 +29,50 @@ FRESNEL_REFLECTANCE_DB = 10 * np.log10(FRESNEL_REFLECTANCE)  # ~ -14.4 dB
 # a calibration knob, not a claimed instrument-accurate value.
 CONNECTOR_REFLECTANCE_TRACE_SCALE = 0.3
 
+# Connector polish grades and their typical return loss (positive-dB convention:
+# bigger = less reflective), per the commonly cited industry figures in Telcordia
+# GR-326-CORE and the IEC 61755-3-x connector-grade classifications: PC (flat
+# physical contact) ~35-45 dB, UPC (ultra physical contact) ~45-55 dB, APC (angled
+# physical contact, an 8 degree angle that deflects the reflection out of the core)
+# ~55-65 dB. These are illustrative typical/spec-range values from public connector
+# datasheets, not measurements of any specific vendor's parts. `prevalence` is an
+# assumed field-population mix (APC/UPC dominant in modern long-haul and datacenter
+# links, plain PC mostly legacy) -- a stated modeling assumption, not a measured
+# deployment survey.
+CONNECTOR_GRADES: dict[str, tuple[float, float, float]] = {
+    # grade: (mean_return_loss_db, std_db, prevalence)
+    "PC": (40.0, 3.0, 0.15),
+    "UPC": (50.0, 3.0, 0.35),
+    "APC": (60.0, 3.0, 0.50),
+}
+_CONNECTOR_GRADE_NAMES = list(CONNECTOR_GRADES.keys())
+_CONNECTOR_GRADE_WEIGHTS = np.array([w for _, _, w in CONNECTOR_GRADES.values()])
+_CONNECTOR_GRADE_WEIGHTS = _CONNECTOR_GRADE_WEIGHTS / _CONNECTOR_GRADE_WEIGHTS.sum()
+
+# The two physical endpoints `mating_quality` interpolates between: a fully unmated
+# glass-air interface (worst case, mating_quality=1.0) has ~14.4 dB return loss
+# (`FRESNEL_REFLECTANCE_DB` above, in the same positive-dB convention); a best-case
+# APC connector (mating_quality=0.0) is assumed around 65 dB.
+UNMATED_RETURN_LOSS_DB = abs(FRESNEL_REFLECTANCE_DB)  # ~14.4 dB
+BEST_CASE_RETURN_LOSS_DB = 65.0
+
+
+def sample_connector_mating_quality(rng: np.random.Generator) -> float:
+    """Draws a `mating_quality` in [0, 1] from a realistic connector-grade population
+    instead of a flat `Uniform(0, 1)`. Picks a polish grade (PC/UPC/APC) weighted by
+    assumed field prevalence, draws that grade's return loss from a Gaussian around
+    its typical spec, then maps return loss linearly onto [0, 1] between the fully
+    unmated (`UNMATED_RETURN_LOSS_DB`) and best-case (`BEST_CASE_RETURN_LOSS_DB`)
+    endpoints -- lower return loss (more reflective) means higher `mating_quality`.
+    """
+    grade = str(rng.choice(_CONNECTOR_GRADE_NAMES, p=_CONNECTOR_GRADE_WEIGHTS))
+    mean_rl_db, std_rl_db, _ = CONNECTOR_GRADES[grade]
+    return_loss_db = float(rng.normal(mean_rl_db, std_rl_db))
+    return_loss_db = float(np.clip(return_loss_db, UNMATED_RETURN_LOSS_DB, BEST_CASE_RETURN_LOSS_DB))
+    span = BEST_CASE_RETURN_LOSS_DB - UNMATED_RETURN_LOSS_DB
+    mating_quality = (BEST_CASE_RETURN_LOSS_DB - return_loss_db) / span
+    return float(np.clip(mating_quality, 0.0, 1.0))
+
 
 @dataclass(frozen=True)
 class Sample:
@@ -72,9 +116,11 @@ def _inject_fault(
         # poorly-mated connector also partially reflects light back toward the
         # source (Fresnel reflection, see FRESNEL_REFLECTANCE_DB above), producing a
         # brief spike right at the connector; a well-mated/APC connector shows
-        # almost none. `mating_quality` in [0, 1] interpolates between those regimes.
+        # almost none. `mating_quality` in [0, 1] interpolates between those regimes,
+        # drawn from a realistic PC/UPC/APC connector-grade population rather than a
+        # flat Uniform(0, 1) -- see `sample_connector_mating_quality`.
         step_loss_db = rng.uniform(0.8, 3.5) * loss_scale
-        mating_quality = rng.uniform(0.0, 1.0)
+        mating_quality = sample_connector_mating_quality(rng)
         reflection_spike_db = (
             mating_quality * abs(FRESNEL_REFLECTANCE_DB) * CONNECTOR_REFLECTANCE_TRACE_SCALE
         )

@@ -45,7 +45,12 @@ span), decide:
   a brief spike back down the fiber sized off the Fresnel power reflectance at a glass-air
   interface (`((n-1)/(n+1))**2`, n ≈ 1.4682 for SMF-28 at 1550nm) scaled by a random
   per-fault `mating_quality` — a poorly mated or non-APC connector reflects visibly, a
-  clean/index-matched one reflects almost nothing.
+  clean/index-matched one reflects almost nothing. `mating_quality` is drawn from a
+  simulated population of PC/UPC/APC connector polish grades weighted by assumed field
+  prevalence, with each grade's return loss centered on the typical/spec-range figures
+  commonly cited in Telcordia GR-326-CORE and IEC 61755-3-x (PC ≈ 40 dB, UPC ≈ 50 dB,
+  APC ≈ 60 dB return loss) — not a flat `Uniform(0, 1)` draw (`sample_connector_mating_quality`
+  in `simulate.py`).
 - `optical_faults/features.py` — hand-engineered features from the raw trace (attenuation
   slope, largest first-derivative jump and its position, segment-wise residuals against a
   fitted baseline) rather than feeding raw traces to a black box — this keeps the model
@@ -261,19 +266,71 @@ number on the other side of the "closing the window-contamination gap" tradeoff:
 shrinking `min_separation_km` to resolve two *real*, closely-spaced faults directly
 buys more single-fault traces getting reported as two.
 
+### Connector-grade calibration: a more realistic reflectance prior changes two numbers, not zero
+
+The previous `mating_quality` draw was `Uniform(0, 1)` — every simulated connector was
+equally likely to be pristine or catastrophically misaligned. That's not what a real
+fiber plant looks like: most modern links use UPC or APC connectors specifically
+*because* they're low-reflectance, with plain PC mostly confined to legacy patch
+panels. `sample_connector_mating_quality` (`simulate.py`) replaces the flat draw with a
+population of PC/UPC/APC grades (weights 0.15/0.35/0.50) whose return loss is drawn
+from a Gaussian around the typical/spec-range figures commonly cited in Telcordia
+GR-326-CORE and IEC 61755-3-x — a stated modeling assumption about field mix, not a
+measured deployment survey, but grounded in real connector-grade physics rather than
+an arbitrary interpolation. The mean drawn `mating_quality` is ~0.23 (measured directly:
+`test_sample_connector_mating_quality_reflects_realistic_grade_mix`), down from a
+`Uniform(0,1)` mean of 0.5 — most simulated connectors now reflect only a little.
+
+Re-running every experiment above at its original seed/size after this change, most
+numbers barely move — the global classifier's train/test accuracy (99.6-100% across
+seeds 0-3), the domain-shift stress drop (0.967 → 0.558, a 0.408-point drop at
+`--seed 4`, vs. 0.975 → 0.525 / 0.450 before), and the multi-fault-interference stress
+(1.000 → 0.500 at `--seed 0`, vs. 0.490 before) all land in the same range already
+documented above, well within normal seed-to-seed variance.
+
+Two numbers moved for a real, traceable reason, though:
+
+- **Multi-event matched-type accuracy fell**, from the post-window-fix 0.835-0.929
+  range down to **0.764-0.870** across seeds 0-3 (`--train-n 800 --n-traces 300
+  --min-separation-km 5.0`). Detection recall (0.697-0.720) and false positives (0 in
+  every seed) were unaffected — this is purely a classification-stage effect.
+- **`connector_loss` over-detection at `min_separation_km=3.0` fell**, from 0.310 to
+  **0.137** (`overdetection-check --n-per-type 300 --seed 0`); `bend_loss` (0.333) and
+  every other fault type were unaffected.
+
+Both come from the same mechanism, and it's worth being honest about what it says
+about the *previous* results: under the old uniform prior, a large fraction of
+`connector_loss` traces had a big, easy-to-see reflection spike, which was acting as a
+shortcut feature — it made those traces both *more separable* from other fault types
+inside a contaminated or clipped window (inflating matched-type accuracy) and *more
+likely* to look like two discrete events to the changepoint scan (inflating
+over-detection). With a realistic connector population, most `connector_loss` traces
+no longer have that crutch, so both numbers move in the direction you'd expect once
+it's gone — worse classification accuracy under contamination, but also less spurious
+over-detection. Neither the previous nor the current number was wrong, but the
+previous one was measuring a synthetic population that doesn't match a real fiber
+plant, and this is a concrete example of exactly the failure mode this repo's domain
+shift work is about: an unrealistic training/eval distribution can flatter a metric
+without anyone noticing until the distribution is corrected.
+
 ## Status / next steps
 
 Single-fault localization, the Fresnel connector-reflectance model, both stress tests
 (domain shift, multi-fault interference), a first pass at actually *handling*
 multi-fault traces (changepoint-scan-and-classify), the window-contamination fix that
-closed most of the matched-type-accuracy gap, and the single-fault over-detection
-check that quantifies why `min_separation_km=5.0` was the right default are done and
-honestly measured. What's left: calibration against public/realistic OTDR trace
-statistics (return-loss distributions for real connector grades), and — for faults
-closer than `bounded_half_window_km` can fully separate — a proper joint two-event
-model instead of independent per-candidate classification, since clipping has a floor
+closed most of the matched-type-accuracy gap, the single-fault over-detection check
+that quantifies why `min_separation_km=5.0` was the right default, and calibrating the
+connector-reflectance prior against realistic PC/UPC/APC field statistics are done and
+honestly measured — including the fact that the calibration made two numbers worse,
+not just more realistic, and why. What's left: for faults closer than
+`bounded_half_window_km` can fully separate, a proper joint two-event model instead of
+independent per-candidate classification, since clipping has a floor
 (`min_half_window_km`) below which it can't fully prevent overlap, and shrinking
-`min_separation_km` to get there now has a measured single-fault false-split cost.
+`min_separation_km` to get there now has a measured single-fault false-split cost. The
+matched-type-accuracy drop from this calibration change is also a candidate root cause
+to revisit if that joint model is ever built — the classifier may need a feature that's
+robust to a missing/weak connector reflection spike specifically, not just to
+window contamination in general.
 
 ## License
 
