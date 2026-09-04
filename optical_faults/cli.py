@@ -9,6 +9,7 @@ import numpy as np
 
 from . import FAULT_TYPES
 from .dataset import generate_dataset, load_dataset, save_dataset
+from .joint_events import DEFAULT_MAX_GAP_KM, DEFAULT_MIN_GAP_KM, render_close_pair_report, run_close_pair_comparison
 from .model import render_markdown_report, train_and_evaluate
 from .multi_event import render_multi_event_report, run_multi_event_detection
 from .multi_fault import render_multi_fault_report, run_multi_fault_stress
@@ -78,6 +79,19 @@ def main(argv: list[str] | None = None) -> int:
         "--separations-km", type=float, nargs="+", default=list(DEFAULT_SEPARATIONS_KM)
     )
     overdetect_p.add_argument("--report", required=True, help="output markdown report path")
+
+    pair_p = sub.add_parser(
+        "close-pair-classify",
+        help="compare independent per-candidate classification against a joint two-event "
+        "model on fault pairs too close for bounded_half_window_km to fully separate",
+    )
+    pair_p.add_argument("--train-n", type=int, default=800)
+    pair_p.add_argument("--n-pairs", type=int, default=300)
+    pair_p.add_argument("--seed", type=int, default=0)
+    pair_p.add_argument("--estimators", type=int, default=100)
+    pair_p.add_argument("--min-gap-km", type=float, default=DEFAULT_MIN_GAP_KM)
+    pair_p.add_argument("--max-gap-km", type=float, default=DEFAULT_MAX_GAP_KM)
+    pair_p.add_argument("--report", required=True, help="output markdown report path")
 
     args = parser.parse_args(argv)
 
@@ -178,6 +192,22 @@ def main(argv: list[str] | None = None) -> int:
             separations_km=tuple(args.separations_km),
         )
         report = render_overdetection_report(results)
+        os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
+        with open(args.report, "w", encoding="utf-8") as handle:
+            handle.write(report)
+        print(report)
+        return 0
+
+    if args.command == "close-pair-classify":
+        result = run_close_pair_comparison(
+            train_n=args.train_n,
+            n_pairs=args.n_pairs,
+            seed=args.seed,
+            n_estimators=args.estimators,
+            min_gap_km=args.min_gap_km,
+            max_gap_km=args.max_gap_km,
+        )
+        report = render_close_pair_report(result)
         os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as handle:
             handle.write(report)
