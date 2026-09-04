@@ -73,6 +73,11 @@ span), decide:
 - `optical_faults/multi_event.py` — evaluates that pipeline on two-fault traces,
   scored against *both* ground-truth events (not just the one the old pipeline is told
   to look for), via greedy nearest-position matching.
+- `optical_faults/joint_events.py` — tests whether a *joint* two-event model (both
+  windows' features + the gap between them, fed to per-side classifier heads) beats
+  independent per-candidate classification on fault pairs too close for
+  `bounded_half_window_km` to fully separate, and includes an ablation that isolates
+  *why* it wins when it does.
 
 ## Quickstart
 
@@ -105,6 +110,11 @@ python -m optical_faults.cli multi-event-detect --train-n 800 --n-traces 300 --s
 # healthy traces? Sweeps min_separation_km to show the false-split-vs-close-fault tradeoff
 python -m optical_faults.cli overdetection-check --n-per-type 300 --seed 0 \
   --report reports/overdetection.md
+
+# For fault pairs too close to fully separate: does a joint two-event model beat
+# independent per-candidate classification, and if so, why?
+python -m optical_faults.cli close-pair-classify --train-n 800 --n-pairs 300 --seed 0 \
+  --report reports/close-pair.md
 ```
 
 ## Honest results
@@ -313,24 +323,69 @@ plant, and this is a concrete example of exactly the failure mode this repo's do
 shift work is about: an unrealistic training/eval distribution can flatter a metric
 without anyone noticing until the distribution is corrected.
 
+### The "proper joint two-event model": a real gain, but not for the reason expected
+
+The previous version of this README's next-steps section proposed "a proper joint
+two-event model instead of independent per-candidate classification" for faults
+closer together than `bounded_half_window_km` can fully separate. `joint_events.py`
+builds and tests exactly that: a classifier that sees *both* candidates' clipped
+local features plus the gap between them, instead of each side being classified
+blind to the other.
+
+On 300 close-pair traces (gap uniform in [5, 8] km, `--seed 0`, `connector_loss` /
+`bend_loss` / `amp_gain_drift` only — see below for why `fiber_cut` is excluded),
+scored against the *known* fault positions (isolating classification from
+detection): independent per-candidate classification (the existing
+`train_local_event_classifier`, trained on clean single-fault traces) reaches
+**0.958 mean accuracy**; the joint model reaches **0.998** — a real, seed-stable
+**+0.040** improvement (seeds 0-3 ranged +0.038 to +0.057).
+
+But *why* it wins turned out not to be what the original next-steps note assumed.
+An ablation — a classifier trained on the *same* close-pair data as the joint
+model, but given only its own window's features, never the other side's or the
+gap — reaches **1.000** mean accuracy on the same eval set, matching or slightly
+*beating* the joint model. Decomposing the total gain: **+0.042** of the +0.040
+(all of it, functionally) comes from training on close-pair data instead of clean
+single-fault traces; the joint architecture's own contribution on top of that is
+**-0.002** — noise, not signal. This held at a second, much wider gap range too
+([14, 18] km, where windows aren't clipped at all): distribution match still
+bought +0.050 to +0.070, and the joint architecture's contribution stayed in a
+tight band around zero (-0.019 to +0.006 across seeds 0-5 at a smaller/faster
+test size).
+
+That's a more useful finding than "the joint model works" would have been: the
+actual bottleneck was never that each side's classifier *couldn't see* the other
+window — it was that `train_local_event_classifier` had never been trained on
+anything but clean, isolated single-fault traces, the same class of train/eval
+mismatch the window-contamination fix earlier in this README already fixed once
+for window *width*. The fix that matters is mixing close-pair examples into that
+training distribution, not adding cross-window architecture. `fiber_cut` is
+excluded from this experiment's fault-type pool specifically because an upstream
+`fiber_cut` makes a downstream event *unobservable*, not *contaminated* — a
+different failure mode this comparison isn't designed to measure (see
+`multi_event.py`'s own results above).
+
 ## Status / next steps
 
 Single-fault localization, the Fresnel connector-reflectance model, both stress tests
 (domain shift, multi-fault interference), a first pass at actually *handling*
 multi-fault traces (changepoint-scan-and-classify), the window-contamination fix that
 closed most of the matched-type-accuracy gap, the single-fault over-detection check
-that quantifies why `min_separation_km=5.0` was the right default, and calibrating the
-connector-reflectance prior against realistic PC/UPC/APC field statistics are done and
-honestly measured — including the fact that the calibration made two numbers worse,
-not just more realistic, and why. What's left: for faults closer than
-`bounded_half_window_km` can fully separate, a proper joint two-event model instead of
-independent per-candidate classification, since clipping has a floor
-(`min_half_window_km`) below which it can't fully prevent overlap, and shrinking
-`min_separation_km` to get there now has a measured single-fault false-split cost. The
-matched-type-accuracy drop from this calibration change is also a candidate root cause
-to revisit if that joint model is ever built — the classifier may need a feature that's
-robust to a missing/weak connector reflection spike specifically, not just to
-window contamination in general.
+that quantifies why `min_separation_km=5.0` was the right default, calibrating the
+connector-reflectance prior against realistic PC/UPC/APC field statistics, and testing
+the "proper joint two-event model" this section used to propose are done and honestly
+measured — including the fact that the joint model's own architecture turned out not
+to be the reason it beats independent classification (see above): training
+`train_local_event_classifier` on close-pair data, not cross-window features, is what
+actually closes the gap. What's left, following directly from that result: fold a
+close-pair training regime into `train_local_event_classifier` itself (mixing in
+examples like `train_matched_single_side_classifier`'s, rather than keeping it a
+separate ablation-only code path) so `detect_and_classify_events`'s general pipeline
+gets this accuracy gain in practice, not just in this isolated comparison — plus
+re-measuring `multi-event-detect`'s matched-type accuracy afterward to see how much of
+it that recovers. The matched-type-accuracy drop from the connector-grade calibration
+change (documented above) is a candidate root cause to check first, since it's the
+same class of train/eval-mismatch problem this section just resolved for window width.
 
 ## License
 
