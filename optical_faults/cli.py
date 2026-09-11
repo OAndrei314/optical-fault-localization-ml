@@ -9,6 +9,7 @@ import numpy as np
 
 from . import FAULT_TYPES
 from .dataset import generate_dataset, load_dataset, save_dataset
+from .events import DEFAULT_CLOSE_PAIR_FRACTION, DEFAULT_CLOSE_PAIR_MAX_GAP_KM, DEFAULT_CLOSE_PAIR_MIN_GAP_KM
 from .joint_events import DEFAULT_MAX_GAP_KM, DEFAULT_MIN_GAP_KM, render_close_pair_report, run_close_pair_comparison
 from .model import render_markdown_report, train_and_evaluate
 from .multi_event import render_multi_event_report, run_multi_event_detection
@@ -66,6 +67,16 @@ def main(argv: list[str] | None = None) -> int:
     event_p.add_argument("--estimators", type=int, default=100)
     event_p.add_argument("--min-separation-km", type=float, default=5.0)
     event_p.add_argument("--match-tolerance-km", type=float, default=3.0)
+    event_p.add_argument(
+        "--close-pair-fraction",
+        type=float,
+        default=DEFAULT_CLOSE_PAIR_FRACTION,
+        help="fraction of training examples drawn from synthetic close-pair traces instead of "
+        "clean single-fault traces (default 0.0 -- see README for why a nonzero value measurably "
+        "does not help this pipeline's broader gap distribution)",
+    )
+    event_p.add_argument("--close-pair-min-gap-km", type=float, default=DEFAULT_CLOSE_PAIR_MIN_GAP_KM)
+    event_p.add_argument("--close-pair-max-gap-km", type=float, default=DEFAULT_CLOSE_PAIR_MAX_GAP_KM)
     event_p.add_argument("--report", required=True, help="output markdown report path")
 
     overdetect_p = sub.add_parser(
@@ -177,6 +188,9 @@ def main(argv: list[str] | None = None) -> int:
             n_estimators=args.estimators,
             min_separation_km=args.min_separation_km,
             match_tolerance_km=args.match_tolerance_km,
+            close_pair_fraction=args.close_pair_fraction,
+            close_pair_min_gap_km=args.close_pair_min_gap_km,
+            close_pair_max_gap_km=args.close_pair_max_gap_km,
         )
         report = render_multi_event_report(result)
         os.makedirs(os.path.dirname(args.report) or ".", exist_ok=True)

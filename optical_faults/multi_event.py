@@ -19,7 +19,15 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import FAULT_TYPES
-from .events import DEFAULT_HALF_WINDOW_KM, DEFAULT_SCALES, detect_and_classify_events, train_local_event_classifier
+from .events import (
+    DEFAULT_CLOSE_PAIR_FRACTION,
+    DEFAULT_CLOSE_PAIR_MAX_GAP_KM,
+    DEFAULT_CLOSE_PAIR_MIN_GAP_KM,
+    DEFAULT_HALF_WINDOW_KM,
+    DEFAULT_SCALES,
+    detect_and_classify_events,
+    train_local_event_classifier,
+)
 from .simulate import NOISE_STD_DB, simulate_multi_fault_trace
 
 _INJECTABLE_FAULT_TYPES = [f for f in FAULT_TYPES if f != "none"]
@@ -70,9 +78,18 @@ def run_multi_event_detection(
     match_tolerance_km: float = 3.0,
     half_window_km: float = DEFAULT_HALF_WINDOW_KM,
     scales: list[tuple[float, float]] = DEFAULT_SCALES,
+    close_pair_fraction: float = DEFAULT_CLOSE_PAIR_FRACTION,
+    close_pair_min_gap_km: float = DEFAULT_CLOSE_PAIR_MIN_GAP_KM,
+    close_pair_max_gap_km: float = DEFAULT_CLOSE_PAIR_MAX_GAP_KM,
 ) -> MultiEventResult:
     model = train_local_event_classifier(
-        train_n=train_n, seed=seed, n_estimators=n_estimators, half_window_km=half_window_km
+        train_n=train_n,
+        seed=seed,
+        n_estimators=n_estimators,
+        half_window_km=half_window_km,
+        close_pair_fraction=close_pair_fraction,
+        close_pair_min_gap_km=close_pair_min_gap_km,
+        close_pair_max_gap_km=close_pair_max_gap_km,
     )
 
     rng = np.random.default_rng(seed + 500)

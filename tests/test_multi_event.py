@@ -30,6 +30,17 @@ def test_matched_type_accuracy_reflects_window_contamination_fix():
     assert result.matched_type_accuracy > 0.78
 
 
+def test_run_multi_event_detection_accepts_close_pair_fraction():
+    # Regression guard for the pass-through added alongside events.py's
+    # close_pair_fraction knob -- must not crash, and must still report valid metrics.
+    result = run_multi_event_detection(
+        train_n=200, n_traces=60, seed=1, n_estimators=20, min_separation_km=5.0, close_pair_fraction=0.3
+    )
+    assert 0.0 <= result.detection_recall <= 1.0
+    if result.n_matched > 0:
+        assert 0.0 <= result.matched_type_accuracy <= 1.0
+
+
 def test_multi_event_report_contains_comparison_context():
     result = run_multi_event_detection(train_n=150, n_traces=40, seed=2, n_estimators=15)
 

@@ -115,6 +115,11 @@ python -m optical_faults.cli overdetection-check --n-per-type 300 --seed 0 \
 # independent per-candidate classification, and if so, why?
 python -m optical_faults.cli close-pair-classify --train-n 800 --n-pairs 300 --seed 0 \
   --report reports/close-pair.md
+
+# Does folding close-pair training examples into the general local-event classifier
+# recover any of close-pair-classify's gain in multi-event-detect's broader evaluation?
+python -m optical_faults.cli multi-event-detect --train-n 800 --n-traces 300 --seed 0 \
+  --close-pair-fraction 0.3 --report reports/multi-event-close-pair.md
 ```
 
 ## Honest results
@@ -365,6 +370,69 @@ excluded from this experiment's fault-type pool specifically because an upstream
 different failure mode this comparison isn't designed to measure (see
 `multi_event.py`'s own results above).
 
+### Folding close-pair training into the general pipeline: measured, and it didn't hold up
+
+The previous section's own next-steps note proposed folding a close-pair training
+regime into `train_local_event_classifier` itself, so `detect_and_classify_events`'s
+general pipeline gets the close-pair accuracy gain in practice, not just in the
+isolated `close-pair-classify` comparison. `train_local_event_classifier` now takes a
+`close_pair_fraction` argument that does exactly that: a fraction of training
+examples come from synthetic close-pair traces (gap uniform in `[5, 8]` km, one side's
+`bounded_half_window_km`-clipped window used per example) instead of clean
+single-fault traces — the same distribution `train_matched_single_side_classifier`
+uses.
+
+Measuring it against `multi-event-detect`'s broader evaluation (not
+`close-pair-classify`'s own narrow-gap-only evaluation) tells a different story than
+hoped. First attempt, sweeping `close_pair_fraction` naively, produced results that
+swung wildly and inconsistently by seed — one seed jumped from 0.764 to 0.960, another
+dropped from 0.789 to 0.747, with no clear pattern. That was itself a bug, not a
+result: the close-pair examples were drawn from the *same* RNG stream as the
+single-fault examples, so changing `close_pair_fraction` didn't just add or remove
+close-pair data, it silently reshuffled which single-fault examples the remaining
+budget drew too — confounding "does close-pair training help" with "this run happened
+to draw an unrelated different single-fault dataset." Giving the close-pair portion
+its own independent RNG stream (`_build_local_event_training_examples` in
+`events.py`) fixes that: the single-fault prefix is now provably identical regardless
+of `close_pair_fraction` (`test_close_pair_fraction_leaves_the_single_fault_prefix_unchanged`
+in `tests/test_events.py`), so a fraction sweep is actually isolating the variable it
+claims to.
+
+With that fixed, the honest result is a lot flatter than `close-pair-classify`'s own
++0.040 gain would suggest. Sweeping `close_pair_fraction` at `train_n=800`, mean
+`matched_type_accuracy` across seeds 0-3 (`multi-event-detect --min-separation-km
+5.0`): **0.799** at 0.0 (the old default), **0.800** at 0.15, **0.790** at 0.3,
+**0.764** at 0.5, **0.771** at 0.7 — flat within noise up to 0.15, then trending
+*down* as the fraction grows. Splitting matched events by whether their true gap
+falls inside vs. outside the ~13 km band where `bounded_half_window_km` actually
+starts clipping (aggregated over seeds 0-3, ~850 matched events per bucket, comparing
+fraction 0.0 against 0.3): close-gap accuracy went from 0.791 to 0.784 and far-gap
+accuracy from 0.809 to 0.797 — both flat-to-slightly-down, not the targeted
+improvement on close pairs the hypothesis predicted.
+
+The likely reason: `close-pair-classify`'s own evaluation traces have gaps confined
+to the exact same `[5, 8]` km band its training data uses, so training-distribution
+match there is a clean, uncontested win. `detect_and_classify_events`'s actual
+candidates in `multi-event-detect` come from `simulate_multi_fault_trace` with only a
+*lower* bound on separation (`min_separation_km=5.0`, no upper bound), so most
+evaluated gaps sit well outside `[5, 8]` km, where close-pair training was never
+supposed to help directly. Meanwhile, the single-fault examples it's now competing
+with for training budget already cover the *full* `[1.5, 6]` km window-width range via
+uniform sampling — so swapping a fraction of them for close-pair examples fixed to the
+narrower `[5, 8]` km gap band trades away width diversity the general pipeline
+actually depends on, for a targeted gain that only pays off in a gap regime most of
+its real traffic doesn't fall into.
+
+`DEFAULT_CLOSE_PAIR_FRACTION` is therefore **0.0** — the feature ships as a tested,
+working, opt-in knob (`train_local_event_classifier(close_pair_fraction=...)`, or
+`--close-pair-fraction` on the `multi-event-detect` CLI command) for a deployment that
+specifically knows its fault-gap distribution concentrates in `[close_pair_min_gap_km,
+close_pair_max_gap_km]`, rather than as a default that would trade a real, broad-gap
+regression for a narrow-gap gain most traffic never sees. Shipping a knob that
+measurably doesn't help by default, with the measurement that shows why, is the
+honest outcome here — not silently dropping the idea, and not forcing a win the data
+doesn't support.
+
 ## Status / next steps
 
 Single-fault localization, the Fresnel connector-reflectance model, both stress tests
@@ -372,20 +440,30 @@ Single-fault localization, the Fresnel connector-reflectance model, both stress 
 multi-fault traces (changepoint-scan-and-classify), the window-contamination fix that
 closed most of the matched-type-accuracy gap, the single-fault over-detection check
 that quantifies why `min_separation_km=5.0` was the right default, calibrating the
-connector-reflectance prior against realistic PC/UPC/APC field statistics, and testing
-the "proper joint two-event model" this section used to propose are done and honestly
-measured — including the fact that the joint model's own architecture turned out not
-to be the reason it beats independent classification (see above): training
-`train_local_event_classifier` on close-pair data, not cross-window features, is what
-actually closes the gap. What's left, following directly from that result: fold a
-close-pair training regime into `train_local_event_classifier` itself (mixing in
-examples like `train_matched_single_side_classifier`'s, rather than keeping it a
-separate ablation-only code path) so `detect_and_classify_events`'s general pipeline
-gets this accuracy gain in practice, not just in this isolated comparison — plus
-re-measuring `multi-event-detect`'s matched-type accuracy afterward to see how much of
-it that recovers. The matched-type-accuracy drop from the connector-grade calibration
-change (documented above) is a candidate root cause to check first, since it's the
-same class of train/eval-mismatch problem this section just resolved for window width.
+connector-reflectance prior against realistic PC/UPC/APC field statistics, testing the
+"proper joint two-event model" this section used to propose, and then folding that
+model's own close-pair training data into `train_local_event_classifier` itself are
+all done and honestly measured — including the fact that the last of these, despite
+following directly from a real +0.040 gain in `close-pair-classify`'s own evaluation,
+measurably does *not* transfer to `multi-event-detect`'s broader gap distribution (see
+above), so it ships disabled by default rather than as a default that regresses the
+common case for a gain that mostly doesn't apply to it.
+
+That result reframes what's actually left here: the remaining accuracy gap in
+`multi-event-detect` (`matched_type_accuracy` around 0.76-0.87, well short of the
+~1.0 the local classifier hits on known, uncontaminated positions) is not primarily a
+training-distribution problem — the training distribution already covers the window
+widths the general pipeline needs. It's a *detection-position* problem: matched-type
+accuracy is measured on windows centered on `detect_changepoints_multiscale`'s
+estimated positions, not the true fault positions, so some of the residual gap is
+localization slop feeding a slightly off-center window into an otherwise-good
+classifier. The natural next measurement is separating those two error sources
+directly — reclassify each matched event using a window centered on its *true*
+position instead of the detected one, and compare that accuracy against the current
+detected-position numbers — to find out how much of the remaining gap is "the
+classifier is still wrong even given a perfect window" versus "the window is
+imperfectly centered," since those two failure modes call for different fixes (better
+features/training vs. better changepoint localization).
 
 ## License
 

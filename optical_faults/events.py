@@ -33,9 +33,15 @@ from sklearn.ensemble import RandomForestClassifier
 
 from . import FAULT_TYPES
 from .features import FEATURE_NAMES, extract_features
-from .simulate import simulate_trace
+from .simulate import simulate_multi_fault_trace, simulate_trace
 
 _INJECTABLE_FAULT_TYPES = [f for f in FAULT_TYPES if f != "none"]
+
+# Fault types eligible for synthetic close-pair training examples. `fiber_cut` is
+# excluded: an upstream cut makes a downstream event physically unobservable rather
+# than merely window-contaminated (see `simulate.simulate_multi_fault_trace`), a
+# different failure mode this pairing logic isn't meant to teach the classifier.
+PAIR_FAULT_TYPES = [f for f in _INJECTABLE_FAULT_TYPES if f != "fiber_cut"]
 
 DEFAULT_SCAN_WINDOW_KM = 3.0
 DEFAULT_HALF_WINDOW_KM = 6.0
@@ -43,6 +49,9 @@ DEFAULT_MIN_HALF_WINDOW_KM = 1.5
 DEFAULT_MIN_SEPARATION_KM = 3.0
 DEFAULT_THRESHOLD_DB = 1.0
 DEFAULT_NEIGHBOR_MARGIN_KM = 0.5
+DEFAULT_CLOSE_PAIR_FRACTION = 0.0
+DEFAULT_CLOSE_PAIR_MIN_GAP_KM = 5.0
+DEFAULT_CLOSE_PAIR_MAX_GAP_KM = 8.0
 
 # A single scan window trades off position precision against recall: a narrow window
 # localizes discrete-jump faults (fiber_cut, connector_loss, bend_loss) tightly, but
@@ -204,6 +213,20 @@ def bounded_half_window_km(
     return max(min_half_window_km, half)
 
 
+def sample_close_pair_positions(
+    rng: np.random.Generator, length_km: float, min_gap_km: float, max_gap_km: float
+) -> tuple[float, float]:
+    """Draws a (left_km, right_km) pair with `right_km - left_km` uniform in
+    `[min_gap_km, max_gap_km]`, both positions kept away from the span edges."""
+    gap_km = float(rng.uniform(min_gap_km, max_gap_km))
+    lo = 0.15 * length_km
+    hi = 0.85 * length_km - gap_km
+    if hi <= lo:
+        hi = lo + 1e-6
+    left_km = float(rng.uniform(lo, hi))
+    return left_km, left_km + gap_km
+
+
 @dataclass
 class LocalEventClassifier:
     classifier: RandomForestClassifier
@@ -217,23 +240,93 @@ def train_local_event_classifier(
     n_estimators: int = 100,
     half_window_km: float = DEFAULT_HALF_WINDOW_KM,
     min_half_window_km: float = DEFAULT_MIN_HALF_WINDOW_KM,
+    close_pair_fraction: float = DEFAULT_CLOSE_PAIR_FRACTION,
+    close_pair_min_gap_km: float = DEFAULT_CLOSE_PAIR_MIN_GAP_KM,
+    close_pair_max_gap_km: float = DEFAULT_CLOSE_PAIR_MAX_GAP_KM,
+    length_km: float = 40.0,
 ) -> LocalEventClassifier:
     """Trains a fault-type classifier on local windows centered on the *known* fault
     position of ordinary single-fault traces -- the train-time analogue of what
     `detect_changepoints` gives at inference time.
 
-    Each example's window width is drawn uniformly from
+    Each single-fault example's window width is drawn uniformly from
     `[min_half_window_km, half_window_km]` rather than fixed at `half_window_km`, so
     the classifier is trained on the same range of window widths that
     `bounded_half_window_km` can hand it at inference when a neighboring candidate
     forces a narrower window. Training only at the full width and then evaluating on
     clipped windows would be its own train/inference mismatch.
+
+    A `close_pair_fraction` of examples instead come from synthetic close-pair traces
+    (`simulate.simulate_multi_fault_trace`, gap uniform in `[close_pair_min_gap_km,
+    close_pair_max_gap_km]`), using one randomly chosen side's `bounded_half_window_km`-
+    clipped window as the training example -- the same distribution
+    `joint_events.train_matched_single_side_classifier` uses, which that module's own
+    ablation showed closes most of a joint two-event model's advantage over this
+    classifier on close pairs. The close-pair portion is drawn from its own
+    independent RNG stream (seeded off `seed`, but never advanced by the single-fault
+    draws or vice versa) so that sweeping `close_pair_fraction` only trades
+    single-fault examples for close-pair ones, without also reshuffling *which*
+    single-fault examples the remaining budget draws -- otherwise "does close-pair
+    training help" would be confounded with "this run happened to draw a different,
+    unrelated single-fault dataset."
+
+    Defaults to 0.0 (the original single-fault-only behavior). Measured against
+    `multi_event.run_multi_event_detection`'s broader evaluation -- gaps drawn from
+    `[min_separation_km, span]`, not fixed to `[close_pair_min_gap_km,
+    close_pair_max_gap_km]` -- a nonzero fraction does *not* reproduce the gain
+    `joint_events.py` found: mean matched-type accuracy across seeds 0-3 was flat to
+    slightly worse at every fraction tried (0.15/0.3/0.5/0.7), in both the close-gap
+    and far-gap subsets. The likely reason: `joint_events.py`'s eval traces have
+    gaps confined to the same narrow `[5, 8]` km band its training data uses, so
+    training-distribution match there is a clean win; `detect_and_classify_events`'s
+    actual candidates span a much wider range of gaps (and `bounded_half_window_km`
+    only ever narrows below the full `half_window_km` for gaps under roughly
+    `2 * (half_window_km + margin)`), so replacing single-fault examples -- which
+    already cover the full range of window widths via the uniform
+    `[min_half_window_km, half_window_km]` draw above -- with narrowly-clipped
+    close-pair-only examples trades away width diversity the general pipeline
+    actually needs. See the README for the full measurement. Left in as a tested,
+    opt-in knob for a deployment that specifically knows its fault-gap distribution
+    concentrates in `[close_pair_min_gap_km, close_pair_max_gap_km]`, where it should
+    behave like `joint_events.py`'s own close-pair-only evaluation.
     """
+    X, y_type = _build_local_event_training_examples(
+        train_n,
+        seed,
+        half_window_km,
+        min_half_window_km,
+        close_pair_fraction,
+        close_pair_min_gap_km,
+        close_pair_max_gap_km,
+        length_km,
+    )
+    clf = RandomForestClassifier(n_estimators=n_estimators, random_state=seed)
+    clf.fit(X, y_type)
+    return LocalEventClassifier(clf, half_window_km, min_half_window_km)
+
+
+def _build_local_event_training_examples(
+    train_n: int,
+    seed: int,
+    half_window_km: float,
+    min_half_window_km: float,
+    close_pair_fraction: float,
+    close_pair_min_gap_km: float,
+    close_pair_max_gap_km: float,
+    length_km: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The feature/label arrays `train_local_event_classifier` fits on, split out so
+    the RNG-isolation property documented there (the single-fault prefix is identical
+    regardless of `close_pair_fraction`) is directly testable without needing to
+    inspect a fitted `RandomForestClassifier`."""
     rng = np.random.default_rng(seed)
+    pair_rng = np.random.default_rng(seed + 104_729)  # arbitrary large prime offset
     X = np.zeros((train_n, len(FEATURE_NAMES)))
     y_type = np.empty(train_n, dtype=object)
+    n_close_pair = int(round(train_n * close_pair_fraction))
+    n_single = train_n - n_close_pair
 
-    for i in range(train_n):
+    for i in range(n_single):
         fault_type = _INJECTABLE_FAULT_TYPES[rng.integers(0, len(_INJECTABLE_FAULT_TYPES))]
         sample = simulate_trace(fault_type, rng=rng)
         sample_half_window_km = rng.uniform(min_half_window_km, half_window_km)
@@ -242,9 +335,29 @@ def train_local_event_classifier(
         )
         y_type[i] = sample.fault_type
 
-    clf = RandomForestClassifier(n_estimators=n_estimators, random_state=seed)
-    clf.fit(X, y_type)
-    return LocalEventClassifier(clf, half_window_km, min_half_window_km)
+    for i in range(n_single, train_n):
+        left_type = PAIR_FAULT_TYPES[pair_rng.integers(0, len(PAIR_FAULT_TYPES))]
+        right_type = PAIR_FAULT_TYPES[pair_rng.integers(0, len(PAIR_FAULT_TYPES))]
+        left_km, right_km = sample_close_pair_positions(
+            pair_rng, length_km, close_pair_min_gap_km, close_pair_max_gap_km
+        )
+        sample = simulate_multi_fault_trace(
+            left_type,
+            right_type,
+            length_km=length_km,
+            primary_position_km=left_km,
+            secondary_position_km=right_km,
+            rng=pair_rng,
+        )
+        if bool(pair_rng.integers(0, 2)):
+            center_km, fault_type, other_km = left_km, left_type, right_km
+        else:
+            center_km, fault_type, other_km = right_km, right_type, left_km
+        sample_half_window_km = bounded_half_window_km(center_km, [other_km], half_window_km, min_half_window_km)
+        X[i] = extract_local_features(sample.distance_km, sample.power_db, center_km, sample_half_window_km)
+        y_type[i] = fault_type
+
+    return X, y_type
 
 
 def detect_and_classify_events(
