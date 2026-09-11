@@ -3,11 +3,14 @@ import numpy as np
 from optical_faults.events import (
     DEFAULT_HALF_WINDOW_KM,
     DEFAULT_MIN_HALF_WINDOW_KM,
+    PAIR_FAULT_TYPES,
+    _build_local_event_training_examples,
     bounded_half_window_km,
     detect_changepoints,
     detect_changepoints_multiscale,
     detect_and_classify_events,
     extract_local_features,
+    sample_close_pair_positions,
     train_local_event_classifier,
 )
 from optical_faults.features import FEATURE_NAMES
@@ -146,3 +149,86 @@ def test_local_event_classifier_beats_random_baseline_on_known_positions():
             correct += 1
     accuracy = correct / total
     assert accuracy > 0.25  # random baseline over 4 classes
+
+
+def test_pair_fault_types_excludes_none_and_fiber_cut():
+    # `events.py` is the canonical home for this list now; `joint_events.py` imports
+    # it rather than redefining it, so this list changing shape would silently change
+    # both modules' behavior.
+    assert "none" not in PAIR_FAULT_TYPES
+    assert "fiber_cut" not in PAIR_FAULT_TYPES
+    assert set(PAIR_FAULT_TYPES) == {"connector_loss", "bend_loss", "amp_gain_drift"}
+
+
+def test_sample_close_pair_positions_respects_gap_and_edges():
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        left_km, right_km = sample_close_pair_positions(rng, length_km=40.0, min_gap_km=5.0, max_gap_km=8.0)
+        gap_km = right_km - left_km
+        assert 5.0 <= gap_km <= 8.0
+        assert 0.0 <= left_km <= 40.0
+        assert 0.0 <= right_km <= 40.0
+
+
+def test_train_local_event_classifier_defaults_to_no_close_pair_examples():
+    # DEFAULT_CLOSE_PAIR_FRACTION is 0.0 -- see the README for why a nonzero default
+    # didn't hold up under `multi_event.py`'s broader evaluation.
+    from optical_faults.events import DEFAULT_CLOSE_PAIR_FRACTION
+
+    assert DEFAULT_CLOSE_PAIR_FRACTION == 0.0
+
+
+def test_close_pair_fraction_only_draws_pair_fault_types():
+    # With close_pair_fraction=1.0, every training label must come from
+    # PAIR_FAULT_TYPES (no "fiber_cut"), since close-pair examples never inject it.
+    _, y_type = _build_local_event_training_examples(
+        train_n=60,
+        seed=0,
+        half_window_km=DEFAULT_HALF_WINDOW_KM,
+        min_half_window_km=DEFAULT_MIN_HALF_WINDOW_KM,
+        close_pair_fraction=1.0,
+        close_pair_min_gap_km=5.0,
+        close_pair_max_gap_km=8.0,
+        length_km=40.0,
+    )
+    assert set(y_type) <= set(PAIR_FAULT_TYPES)
+
+
+def test_close_pair_fraction_leaves_the_single_fault_prefix_unchanged():
+    # The whole point of using an independent RNG stream for the close-pair portion
+    # (see train_local_event_classifier's docstring) is that increasing
+    # close_pair_fraction only trims the single-fault budget -- it must not perturb
+    # which single-fault examples the remaining budget draws, or a fraction sweep
+    # would be comparing differently-drawn single-fault datasets, not isolating the
+    # close-pair effect.
+    kwargs = dict(
+        train_n=40,
+        seed=3,
+        half_window_km=DEFAULT_HALF_WINDOW_KM,
+        min_half_window_km=DEFAULT_MIN_HALF_WINDOW_KM,
+        close_pair_min_gap_km=5.0,
+        close_pair_max_gap_km=8.0,
+        length_km=40.0,
+    )
+    X_all_single, y_all_single = _build_local_event_training_examples(close_pair_fraction=0.0, **kwargs)
+    X_mixed, y_mixed = _build_local_event_training_examples(close_pair_fraction=0.25, **kwargs)
+
+    n_single = 40 - 10  # round(40 * 0.25) == 10 close-pair examples
+    np.testing.assert_array_equal(X_mixed[:n_single], X_all_single[:n_single])
+    assert list(y_mixed[:n_single]) == list(y_all_single[:n_single])
+
+
+def test_close_pair_fraction_zero_matches_no_fraction_argument():
+    # Regression guard: the default must actually be wired through, not just declared.
+    X_default, y_default = _build_local_event_training_examples(
+        train_n=30,
+        seed=1,
+        half_window_km=DEFAULT_HALF_WINDOW_KM,
+        min_half_window_km=DEFAULT_MIN_HALF_WINDOW_KM,
+        close_pair_fraction=0.0,
+        close_pair_min_gap_km=5.0,
+        close_pair_max_gap_km=8.0,
+        length_km=40.0,
+    )
+    model = train_local_event_classifier(train_n=30, seed=1, n_estimators=10)
+    assert model.classifier.n_classes_ == len(set(y_default))

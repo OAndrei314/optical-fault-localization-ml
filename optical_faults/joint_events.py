@@ -30,19 +30,17 @@ from dataclasses import dataclass
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
-from . import FAULT_TYPES
 from .events import (
     DEFAULT_HALF_WINDOW_KM,
     DEFAULT_MIN_HALF_WINDOW_KM,
+    PAIR_FAULT_TYPES,
     bounded_half_window_km,
     extract_local_features,
+    sample_close_pair_positions as _sample_close_pair_positions,
     train_local_event_classifier,
 )
 from .features import FEATURE_NAMES
 from .simulate import NOISE_STD_DB, simulate_multi_fault_trace
-
-# Excludes "fiber_cut" as well as "none" -- see module docstring.
-PAIR_FAULT_TYPES = [f for f in FAULT_TYPES if f not in ("none", "fiber_cut")]
 
 JOINT_FEATURE_NAMES = (
     [f"left_{name}" for name in FEATURE_NAMES] + [f"right_{name}" for name in FEATURE_NAMES] + ["gap_km"]
@@ -50,20 +48,6 @@ JOINT_FEATURE_NAMES = (
 
 DEFAULT_MIN_GAP_KM = 5.0
 DEFAULT_MAX_GAP_KM = 8.0
-
-
-def _sample_close_pair_positions(
-    rng: np.random.Generator, length_km: float, min_gap_km: float, max_gap_km: float
-) -> tuple[float, float]:
-    """Draws a (left_km, right_km) pair with `right_km - left_km` uniform in
-    `[min_gap_km, max_gap_km]`, both positions kept away from the span edges."""
-    gap_km = float(rng.uniform(min_gap_km, max_gap_km))
-    lo = 0.15 * length_km
-    hi = 0.85 * length_km - gap_km
-    if hi <= lo:
-        hi = lo + 1e-6
-    left_km = float(rng.uniform(lo, hi))
-    return left_km, left_km + gap_km
 
 
 def _joint_features(
@@ -249,13 +233,20 @@ def run_close_pair_comparison(
     """Compares independent per-candidate classification (each side sees only its
     own clipped window, as in `events.detect_and_classify_events`) against the
     joint model above, on the *same* close-pair traces and *known* fault
-    positions -- isolating the classification question from detection/matching."""
+    positions -- isolating the classification question from detection/matching.
+
+    `independent_model` is trained with `close_pair_fraction=0.0` explicitly: this
+    ablation's whole point is to isolate what close-pair training data buys over the
+    old clean-single-fault-only training set, so the "independent" baseline has to
+    actually be that old baseline, not `train_local_event_classifier`'s new default.
+    """
     independent_model = train_local_event_classifier(
         train_n=train_n,
         seed=seed,
         n_estimators=n_estimators,
         half_window_km=max_half_window_km,
         min_half_window_km=min_half_window_km,
+        close_pair_fraction=0.0,
     )
     matched_model = train_matched_single_side_classifier(
         train_n=train_n,
